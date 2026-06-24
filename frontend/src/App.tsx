@@ -17,12 +17,14 @@ import {
   UploadOutlined,
 } from '@ant-design/icons';
 import {
+  Alert,
   App as AntApp,
   Button,
   Card,
   Checkbox,
   ConfigProvider,
   Drawer,
+  Empty,
   Form,
   Input,
   InputNumber,
@@ -36,9 +38,11 @@ import {
   Space,
   Switch,
   Table,
+  Tabs,
   Tag,
   Typography,
   Upload,
+  Steps,
 } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import type { UploadProps } from 'antd';
@@ -80,12 +84,42 @@ type Survey = {
   createdAt: string;
 };
 
+type Contact = {
+  id: number;
+  name: string;
+  department?: string | null;
+  jobNo?: string | null;
+  phone: string;
+  email?: string | null;
+};
+
+type WhitelistRecord = {
+  id: number;
+  surveyId: number;
+  enabled: boolean;
+  memberCount: number;
+  updatedAt: string;
+  survey: Survey;
+  members?: Contact[];
+};
+
 const http = axios.create({ baseURL: API });
 http.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
+
+http.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.clear();
+      if (location.pathname !== '/login') location.href = '/login';
+    }
+    return Promise.reject(error);
+  },
+);
 
 async function downloadFile(path: string, filename: string) {
   const response = await http.get(path, { responseType: 'blob' });
@@ -120,7 +154,16 @@ const paletteOptions: Array<{ type: QuestionType; label: string; icon: ReactNode
 
 function App() {
   return (
-    <ConfigProvider locale={zhCN}>
+    <ConfigProvider
+      locale={zhCN}
+      theme={{
+        token: {
+          colorPrimary: '#4E73F5',
+          colorLink: '#4E73F5',
+          borderRadius: 8,
+        },
+      }}
+    >
       <AntApp>
         <BrowserRouter>
           <Routes>
@@ -152,20 +195,44 @@ function LoginPage() {
 
   return (
     <div className="login-page">
-      <div className="login-panel">
-        <Typography.Title level={3}>内部问卷系统</Typography.Title>
-        <Typography.Paragraph type="secondary">默认账号：13800000000 / admin123456</Typography.Paragraph>
-        <Form layout="vertical" onFinish={onFinish} initialValues={{ phone: '13800000000', password: 'admin123456' }}>
-          <Form.Item name="phone" label="手机号" rules={[{ required: true, message: '请输入手机号' }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="password" label="密码" rules={[{ required: true, message: '请输入密码' }]}>
-            <Input.Password />
-          </Form.Item>
-          <Button type="primary" htmlType="submit" block>
-            登录
-          </Button>
-        </Form>
+      {/* 左侧品牌面板 */}
+      <div className="login-left">
+        <div className="login-brand">
+          <div className="login-brand-icon">📋</div>
+          <div className="login-brand-name">内部问卷系统</div>
+          <div className="login-brand-sub">高效的企业内部调研与考核平台</div>
+        </div>
+        <ul className="login-features">
+          <li><span className="login-feature-dot" />多类型问卷，灵活配置</li>
+          <li><span className="login-feature-dot" />白名单管控，精准触达</li>
+          <li><span className="login-feature-dot" />实时数据统计，一键导出</li>
+        </ul>
+      </div>
+      {/* 右侧表单区 */}
+      <div className="login-right">
+        <div className="login-card">
+          <Typography.Title level={3} style={{ margin: '0 0 4px', color: 'var(--text-primary)' }}>欢迎登录</Typography.Title>
+          <Typography.Paragraph type="secondary" style={{ margin: '0 0 28px', fontSize: 13 }}>
+            默认账号：13800000000 / admin123456
+          </Typography.Paragraph>
+          <Form layout="vertical" onFinish={onFinish} initialValues={{ phone: '13800000000', password: 'admin123456' }}>
+            <Form.Item name="phone" label="手机号" rules={[{ required: true, message: '请输入手机号' }]}>
+              <Input size="large" placeholder="请输入手机号" />
+            </Form.Item>
+            <Form.Item name="password" label="密码" rules={[{ required: true, message: '请输入密码' }]}>
+              <Input.Password size="large" placeholder="请输入密码" />
+            </Form.Item>
+            <Button
+              type="primary"
+              htmlType="submit"
+              block
+              size="large"
+              className="login-submit-btn"
+            >
+              登录
+            </Button>
+          </Form>
+        </div>
       </div>
     </div>
   );
@@ -178,21 +245,30 @@ function AdminShell() {
 
   return (
     <Layout className="app-shell">
-      <Layout.Sider width={208} theme="light">
-        <div style={{ padding: 20, fontWeight: 700 }}>内部问卷系统</div>
+      <Layout.Sider width={216} theme="dark" className="app-sider">
+        <div className="sider-logo">
+          <span className="sider-logo-icon">📋</span>
+          <span className="sider-logo-text">内部问卷系统</span>
+        </div>
         <Menu
+          theme="dark"
           mode="inline"
           selectedKeys={[location.pathname]}
           onClick={({ key }) => navigate(key)}
+          className="app-sider-menu"
           items={[
-            { key: '/surveys', label: '问卷管理' },
-            { key: '/contacts', label: '联系人' },
-            { key: '/members', label: '后台成员' },
+            { key: '/surveys', label: '问卷管理', icon: <FormOutlined /> },
+            { key: '/whitelists', label: '白名单管理', icon: <TableOutlined /> },
+            { key: '/contacts', label: '联系人', icon: <FileTextOutlined /> },
+            { key: '/members', label: '后台成员', icon: <CheckSquareOutlined /> },
           ]}
         />
       </Layout.Sider>
       <Layout>
-        <Layout.Header style={{ background: '#fff', display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
+        <Layout.Header className="app-header">
+          <div className="app-header-title">{
+            { '/surveys': '问卷管理', '/whitelists': '白名单管理', '/contacts': '联系人', '/members': '后台成员' }[location.pathname] || '问卷管理'
+          }</div>
           <Button
             onClick={() => {
               localStorage.clear();
@@ -210,6 +286,9 @@ function AdminShell() {
             <Route path="/surveys/:id/edit" element={<SurveyEditor />} />
             <Route path="/surveys/:id/share" element={<SharePage />} />
             <Route path="/surveys/:id/responses" element={<ResponsesPage />} />
+            <Route path="/whitelists" element={<WhitelistListPage />} />
+            <Route path="/whitelists/new" element={<WhitelistEditorPage />} />
+            <Route path="/whitelists/:surveyId/edit" element={<WhitelistEditorPage />} />
             <Route path="/contacts" element={<ContactsPage />} />
             <Route path="/members" element={<MembersPage />} />
           </Routes>
@@ -243,13 +322,52 @@ function SurveyList() {
     load();
   }
 
+  const thisMonth = new Date().toISOString().slice(0, 7);
+  const stats = {
+    total: data.length,
+    enabled: data.filter((s) => s.status === 'published').length,
+    disabled: data.filter((s) => s.status === 'disabled').length,
+    newThisMonth: data.filter((s) => s.createdAt?.startsWith(thisMonth)).length,
+  };
+
   return (
     <>
       <div className="toolbar">
         <h1 className="page-title">问卷管理</h1>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/surveys/new')}>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/surveys/new')} className="gradient-btn">
           新建问卷
         </Button>
+      </div>
+      {/* 统计卡片行 */}
+      <div className="stats-row">
+        <div className="stat-card">
+          <div className="stat-card-icon" style={{ background: 'linear-gradient(135deg, #4E73F5, #7C54E8)' }}>📋</div>
+          <div>
+            <div className="stat-card-value">{stats.total}</div>
+            <div className="stat-card-label">问卷总数</div>
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-card-icon" style={{ background: 'linear-gradient(135deg, #52C41A, #73D13D)' }}>✅</div>
+          <div>
+            <div className="stat-card-value">{stats.enabled}</div>
+            <div className="stat-card-label">已启用</div>
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-card-icon" style={{ background: 'linear-gradient(135deg, #FF7A45, #FF9C6E)' }}>⏸</div>
+          <div>
+            <div className="stat-card-value">{stats.disabled}</div>
+            <div className="stat-card-label">已禁用</div>
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-card-icon" style={{ background: 'linear-gradient(135deg, #13C2C2, #36CFC9)' }}>🆕</div>
+          <div>
+            <div className="stat-card-value">{stats.newThisMonth}</div>
+            <div className="stat-card-label">本月新增</div>
+          </div>
+        </div>
       </div>
       <Card>
         <div className="toolbar">
@@ -318,7 +436,7 @@ function SurveyList() {
                   <Button icon={<DownloadOutlined />} onClick={() => downloadFile(`/admin/surveys/${row.id}/export`, `survey-${row.id}.csv`)}>
                     导出 CSV
                   </Button>
-                  <Popconfirm title="确认删除该问卷？" onConfirm={async () => { await http.delete(`/admin/surveys/${row.id}`); load(); }}>
+                  <Popconfirm title="确认删除该问卷？" cancelText="No" onConfirm={async () => { await http.delete(`/admin/surveys/${row.id}`); load(); }}>
                     <Button danger icon={<DeleteOutlined />}>
                       删除
                     </Button>
@@ -339,6 +457,7 @@ function SurveyEditor() {
   const { message } = AntApp.useApp();
   const [form] = Form.useForm<{ title: string; type: SurveyKind }>();
   const surveyType = Form.useWatch('type', form) || 'assessment';
+  const surveyTitle = Form.useWatch('title', form);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [activeId, setActiveId] = useState<string>();
   const [contentHtml, setContentHtml] = useState('');
@@ -494,6 +613,13 @@ function SurveyEditor() {
         </aside>
 
         <main className="builder-canvas">
+          {/* 渐变 Banner 预览头图 */}
+          <div className="canvas-header-banner">
+            <div className="canvas-banner-tag">{surveyTypeLabel(surveyType)}</div>
+            <div className="canvas-banner-title">
+              {surveyTitle || (id ? '编辑问卷' : '新建问卷')}
+            </div>
+          </div>
           <Card className="survey-meta-card">
             <Form form={form} layout="vertical" initialValues={{ type: 'assessment' }}>
               <Form.Item name="title" label="问卷名称" rules={[{ required: true, message: '请输入问卷名称' }]}>
@@ -798,7 +924,7 @@ function QuestionEditor({
             <span className="question-type-tag">{typeLabel(question.type)}</span>
           </div>
         </div>
-        <Popconfirm title="确认删除这道题？" onConfirm={onDelete}>
+        <Popconfirm title="确认删除这道题？" cancelText="No" onConfirm={onDelete}>
           <Button className="question-delete-button" size="small" icon={<DeleteOutlined />}>
             删除
           </Button>
@@ -1150,6 +1276,393 @@ function formatAnswerValue(value: unknown) {
   return String(value);
 }
 
+function WhitelistListPage() {
+  const navigate = useNavigate();
+  const { message } = AntApp.useApp();
+  const [rows, setRows] = useState<WhitelistRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    try {
+      setRows((await http.get('/admin/whitelists')).data);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  return (
+    <>
+      <div className="toolbar">
+        <div>
+          <h1 className="page-title">白名单管理</h1>
+          <Typography.Text type="secondary">为指定问卷配置允许填写的联系人名单。</Typography.Text>
+        </div>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/whitelists/new')}>
+          新增白名单
+        </Button>
+      </div>
+      <Card>
+        <Table
+          rowKey="id"
+          loading={loading}
+          dataSource={rows}
+          pagination={false}
+          footer={() => `共 ${rows.length} 个白名单配置`}
+          columns={[
+            { title: '问卷名称', dataIndex: ['survey', 'title'] },
+            {
+              title: '问卷类型',
+              dataIndex: ['survey', 'type'],
+              render: (value: SurveyKind) => <Tag color={surveyTypeColor(value)}>{surveyTypeLabel(value)}</Tag>,
+            },
+            {
+              title: '白名单状态',
+              dataIndex: 'enabled',
+              render: (value: boolean) => <Tag color={value ? 'green' : 'default'}>{value ? '已开启' : '已关闭'}</Tag>,
+            },
+            { title: '已配置人数', dataIndex: 'memberCount' },
+            { title: '最后更新时间', dataIndex: 'updatedAt', render: (value: string) => new Date(value).toLocaleString() },
+            {
+              title: '操作',
+              render: (_: unknown, row: WhitelistRecord) => (
+                <Space>
+                  <Button onClick={() => navigate(`/whitelists/${row.surveyId}/edit`)}>编辑</Button>
+                  <Popconfirm
+                    title="确认删除该白名单？"
+                    cancelText="No"
+                    onConfirm={async () => {
+                      await http.delete(`/admin/whitelists/${row.surveyId}`);
+                      message.success('白名单已删除');
+                      load();
+                    }}
+                  >
+                    <Button danger>删除</Button>
+                  </Popconfirm>
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </Card>
+    </>
+  );
+}
+
+function WhitelistEditorPage() {
+  const { surveyId } = useParams();
+  const navigate = useNavigate();
+  const { message } = AntApp.useApp();
+  const editing = Boolean(surveyId);
+  const [step, setStep] = useState(editing ? 1 : 0);
+  const [surveys, setSurveys] = useState<Survey[]>([]);
+  const [existingWhitelists, setExistingWhitelists] = useState<WhitelistRecord[]>([]);
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [contactKeyword, setContactKeyword] = useState('');
+  const [selectedSurveyId, setSelectedSurveyId] = useState<number | undefined>(surveyId ? Number(surveyId) : undefined);
+  const [enabled, setEnabled] = useState(true);
+  const [activeTab, setActiveTab] = useState('manual');
+  const [manualMembers, setManualMembers] = useState<Contact[]>([]);
+  const [csvMembers, setCsvMembers] = useState<Contact[]>([]);
+  const [csvResult, setCsvResult] = useState<any>();
+  const [fileList, setFileList] = useState<any[]>([]);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    Promise.all([http.get('/admin/surveys'), http.get('/admin/whitelists'), http.get('/admin/contacts')]).then(
+      async ([surveyRes, whitelistRes, contactRes]) => {
+        setSurveys(surveyRes.data);
+        setExistingWhitelists(whitelistRes.data);
+        setContacts(contactRes.data);
+        if (surveyId) {
+          const { data } = await http.get(`/admin/whitelists/${surveyId}`);
+          setEnabled(data.enabled);
+          setManualMembers(data.members || []);
+          setCsvMembers(data.members || []);
+        }
+      },
+    );
+  }, [surveyId]);
+
+  const selectedSurvey = surveys.find((item) => item.id === selectedSurveyId);
+  const configuredIds = new Set(existingWhitelists.map((item) => item.surveyId));
+  const availableSurveys = surveys.filter((survey) => survey.id === selectedSurveyId || !configuredIds.has(survey.id));
+  const activeMembers = activeTab === 'manual' ? manualMembers : csvMembers;
+  const filteredContacts = contacts.filter((contact) => {
+    const keyword = contactKeyword.trim();
+    if (!keyword) return true;
+    return [contact.name, contact.department, contact.phone].some((value) => String(value || '').includes(keyword));
+  });
+
+  function addManualMember(contact: Contact) {
+    setManualMembers((prev) => (prev.some((item) => item.id === contact.id) ? prev : [...prev, contact]));
+  }
+
+  function removeManualMember(contactId: number) {
+    setManualMembers((prev) => prev.filter((item) => item.id !== contactId));
+  }
+
+  function downloadWhitelistTemplate() {
+    const csv = '张三,13800000001\n李四,13800000002\n';
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'whitelist_template.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  async function parseWhitelistCsv(file: File) {
+    Papa.parse(file, {
+      header: false,
+      skipEmptyLines: true,
+      complete: async (result) => {
+        if (result.errors.length > 0) {
+          message.error('CSV 解析失败，请检查文件格式');
+          return;
+        }
+        const rawRows = (result.data as any[][]).filter((row) => row.some((cell) => String(cell || '').trim()));
+        if (rawRows.length > 1000) {
+          message.error('文件行数超过 1000 行，请拆分后分批导入');
+          return;
+        }
+        const rows = rawRows.map((row) => ({ name: String(row[0] || '').trim(), phone: String(row[1] || '').trim() }));
+        const invalid = rows.filter((row) => !/^1\d{10}$/.test(row.phone)).map((row) => ({ ...row, reason: '手机号格式错误' }));
+        const validRows = rows.filter((row) => /^1\d{10}$/.test(row.phone));
+        const { data } = await http.post('/admin/whitelists/match-csv', { rows: validRows });
+        const matchedContacts = data.matched.map((item: any) => ({
+          id: item.contactId,
+          name: item.name,
+          phone: item.phone,
+          department: item.department,
+        }));
+        setCsvMembers(matchedContacts);
+        setCsvResult({ total: rows.length, matched: data.matched, unmatched: [...invalid, ...data.unmatched] });
+      },
+      error: () => message.error('CSV 读取失败，请重新选择文件'),
+    });
+  }
+
+  async function saveWhitelist() {
+    if (!selectedSurveyId) {
+      message.error('请先选择问卷');
+      return;
+    }
+    setSaving(true);
+    try {
+      const payload = { surveyId: selectedSurveyId, enabled, memberContactIds: activeMembers.map((item) => item.id) };
+      if (editing) {
+        await http.put(`/admin/whitelists/${selectedSurveyId}`, payload);
+      } else {
+        await http.post('/admin/whitelists', payload);
+      }
+      message.success('白名单已保存');
+      navigate('/whitelists');
+    } catch (error: any) {
+      message.error(error.response?.data?.message || '保存失败，请稍后重试');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="toolbar">
+        <h1 className="page-title">{editing ? '编辑白名单' : '新增白名单'}</h1>
+        <Button onClick={() => navigate('/whitelists')}>返回列表</Button>
+      </div>
+      <Card className="whitelist-editor">
+        <Steps current={step} items={[{ title: '选择问卷' }, { title: '配置人员' }]} style={{ marginBottom: 24 }} />
+        {step === 0 ? (
+          <>
+            <div className="whitelist-survey-grid">
+              {availableSurveys.map((survey) => (
+                <button
+                  key={survey.id}
+                  type="button"
+                  className={`whitelist-survey-card ${selectedSurveyId === survey.id ? 'selected' : ''}`}
+                  onClick={() => setSelectedSurveyId(survey.id)}
+                >
+                  <div className="whitelist-survey-title">{survey.title}</div>
+                  <Space>
+                    <Tag color={surveyTypeColor(survey.type)}>{surveyTypeLabel(survey.type)}</Tag>
+                    <Tag>尚未配置白名单</Tag>
+                  </Space>
+                </button>
+              ))}
+            </div>
+            {availableSurveys.length === 0 && <Empty description="暂无可配置白名单的问卷" />}
+            <div className="whitelist-footer">
+              <Button onClick={() => navigate('/whitelists')}>取消</Button>
+              <Button type="primary" disabled={!selectedSurveyId} onClick={() => setStep(1)}>
+                下一步
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="whitelist-survey-info">
+              <div>
+                <div className="whitelist-survey-title">{selectedSurvey?.title || '-'}</div>
+                {selectedSurvey && <Tag color={surveyTypeColor(selectedSurvey.type)}>{surveyTypeLabel(selectedSurvey.type)}</Tag>}
+              </div>
+              <Switch checked={enabled} onChange={setEnabled} checkedChildren="已开启" unCheckedChildren="已关闭" />
+            </div>
+            {enabled ? (
+              <Alert type="warning" showIcon message="白名单已开启：仅下方名单内的用户可填写该问卷，名单外用户将看到“该问卷暂未开放”。" style={{ marginBottom: 16 }} />
+            ) : (
+              <Alert type="info" showIcon message="白名单已关闭，所有通过企微授权的用户均可填写。" style={{ marginBottom: 16 }} />
+            )}
+            <Typography.Paragraph type="secondary">保存时将以当前 Tab 的人员列表为准。</Typography.Paragraph>
+            <Tabs
+              activeKey={activeTab}
+              onChange={setActiveTab}
+              items={[
+                {
+                  key: 'manual',
+                  label: '手动选择',
+                  children: (
+                    <div className="whitelist-columns">
+                      <div className="whitelist-column">
+                        <Input.Search placeholder="按姓名、部门或手机号搜索" allowClear value={contactKeyword} onChange={(event) => setContactKeyword(event.target.value)} />
+                        <div className="whitelist-contact-list">
+                          {filteredContacts.map((contact) => {
+                            const added = manualMembers.some((item) => item.id === contact.id);
+                            return (
+                              <div key={contact.id} className="whitelist-person-row">
+                                <AvatarName name={contact.name} active={added} />
+                                <div className="whitelist-person-main">
+                                  <div>{contact.name}</div>
+                                  <Typography.Text type="secondary">{contact.department || '-'}</Typography.Text>
+                                </div>
+                                {added ? <Tag color="green">已添加</Tag> : <Button shape="circle" icon={<PlusOutlined />} onClick={() => addManualMember(contact)} />}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <WhitelistMemberPanel members={manualMembers} onClear={() => setManualMembers([])} onRemove={removeManualMember} />
+                    </div>
+                  ),
+                },
+                {
+                  key: 'csv',
+                  label: '批量导入 CSV',
+                  children: (
+                    <div className="whitelist-csv">
+                      {!csvResult ? (
+                        <>
+                          <Typography.Paragraph>CSV 文件格式：两列，无需表头。第一列姓名，第二列手机号，以手机号匹配联系人。</Typography.Paragraph>
+                          <Upload.Dragger
+                            accept=".csv,text/csv"
+                            maxCount={1}
+                            fileList={fileList}
+                            beforeUpload={(file) => {
+                              if (!file.name.toLowerCase().endsWith('.csv')) {
+                                message.error('仅支持 CSV 文件');
+                                return Upload.LIST_IGNORE;
+                              }
+                              setFileList([file]);
+                              parseWhitelistCsv(file as File);
+                              return false;
+                            }}
+                            onRemove={() => {
+                              setFileList([]);
+                              setCsvResult(undefined);
+                              setCsvMembers([]);
+                            }}
+                          >
+                            <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+                            <p className="ant-upload-text">点击或拖拽 CSV 文件到此处上传</p>
+                            <p className="ant-upload-hint">最多 1000 行，仅匹配已存在联系人</p>
+                          </Upload.Dragger>
+                          <Button type="link" className="contact-template-link" onClick={downloadWhitelistTemplate}>
+                            下载 CSV 模板
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <div className="whitelist-import-stats">
+                            <Card size="small"><strong>{csvResult.total}</strong><span>共导入行数</span></Card>
+                            <Card size="small"><strong className="success">{csvResult.matched.length}</strong><span>匹配成功</span></Card>
+                            <Card size="small"><strong className="danger">{csvResult.unmatched.length}</strong><span>匹配失败</span></Card>
+                          </div>
+                          {csvResult.unmatched.length > 0 && (
+                            <div className="whitelist-fail-list">
+                              <Typography.Text type="danger">以下人员未匹配成功，不会加入白名单。</Typography.Text>
+                              {csvResult.unmatched.map((item: any, index: number) => (
+                                <div key={`${item.phone}-${index}`} className="whitelist-fail-row">
+                                  <span>{item.name || '-'}</span>
+                                  <span>{item.phone || '-'}</span>
+                                  <Tag color="red">{item.reason}</Tag>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          <WhitelistMemberPanel members={csvMembers} onClear={() => setCsvMembers([])} onRemove={(id) => setCsvMembers((prev) => prev.filter((item) => item.id !== id))} />
+                          <Button onClick={() => { setCsvResult(undefined); setFileList([]); setCsvMembers([]); }}>重新上传</Button>
+                        </>
+                      )}
+                    </div>
+                  ),
+                },
+              ]}
+            />
+            <div className="whitelist-footer">
+              {!editing && <Button onClick={() => setStep(0)}>上一步</Button>}
+              <Button type="primary" loading={saving} onClick={saveWhitelist}>
+                保存白名单
+              </Button>
+            </div>
+          </>
+        )}
+      </Card>
+    </>
+  );
+}
+
+function AvatarName({ name, active }: { name: string; active?: boolean }) {
+  return <div className={`whitelist-avatar ${active ? 'active' : ''}`}>{(name || '?').slice(0, 1)}</div>;
+}
+
+function WhitelistMemberPanel({ members, onClear, onRemove }: { members: Contact[]; onClear: () => void; onRemove: (id: number) => void }) {
+  return (
+    <div className="whitelist-column">
+      <div className="whitelist-member-head">
+        <strong>已添加 {members.length} 人</strong>
+        <Popconfirm title="确认清空全部成员？" cancelText="No" onConfirm={onClear}>
+          <Button size="small">清空</Button>
+        </Popconfirm>
+      </div>
+      <div className="whitelist-contact-list">
+        {members.length === 0 ? (
+          <Empty description="从左侧选择联系人添加到白名单" />
+        ) : (
+          members.map((contact) => (
+            <div key={contact.id} className="whitelist-person-row">
+              <AvatarName name={contact.name} active />
+              <div className="whitelist-person-main">
+                <div>{contact.name}</div>
+                <Typography.Text type="secondary">{contact.department || '-'}</Typography.Text>
+              </div>
+              <Button type="text" danger onClick={() => onRemove(contact.id)}>
+                ×
+              </Button>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ContactsPage() {
   const { message } = AntApp.useApp();
   const [rows, setRows] = useState<any[]>([]);
@@ -1275,7 +1788,7 @@ function ContactsPage() {
                 >
                   编辑
                 </Button>
-                <Popconfirm title="确认删除？" onConfirm={async () => { await http.delete(`/admin/contacts/${row.id}`); load(); }}>
+                <Popconfirm title="确认删除？" cancelText="No" onConfirm={async () => { await http.delete(`/admin/contacts/${row.id}`); load(); }}>
                   <Button danger>删除</Button>
                 </Popconfirm>
               </Space>
@@ -1391,7 +1904,7 @@ function MembersPage() {
               row.isPrimary ? (
                 <Button disabled>删除</Button>
               ) : (
-                <Popconfirm title="确认删除？" onConfirm={async () => { await http.delete(`/admin/members/${row.id}`); load(); }}>
+                <Popconfirm title="确认删除？" cancelText="No" onConfirm={async () => { await http.delete(`/admin/members/${row.id}`); load(); }}>
                   <Button danger>删除</Button>
                 </Popconfirm>
               ),
@@ -1460,8 +1973,6 @@ function FillPage() {
     );
   }
 
-  if (survey.alreadySubmitted) return <Result status="info" title="您已提交过该问卷" />;
-
   async function submit() {
     if (submitting) return;
 
@@ -1476,17 +1987,53 @@ function FillPage() {
     }
   }
 
+  const answerableQuestions = visibleQuestions.filter((q: Question) => q.type !== 'description');
+  const answeredCount = answerableQuestions.filter((q: Question) => {
+    const val = answers[q.id];
+    if (Array.isArray(val)) return val.length > 0;
+    return val !== undefined && val !== '';
+  }).length;
+  const totalCount = answerableQuestions.length;
+  const progressPct = totalCount > 0 ? Math.round((answeredCount / totalCount) * 100) : 0;
+
   return (
     <div className="fill-page">
-      <div className="fill-panel">
-        <Typography.Title level={3}>{survey.title}</Typography.Title>
-        <Typography.Paragraph type="secondary">当前模拟企微身份：{survey.currentUser?.name}</Typography.Paragraph>
+      {/* 渐变大头图 Banner */}
+      <div className="fill-banner">
+        <div className="fill-banner-tag">{
+          { assessment: '问卷考核', case_collection: '案例收集', promotional_document: '宣传文档' }[survey.type as string] || '问卷'
+        }</div>
+        <div className="fill-banner-title">{survey.title}</div>
+        {survey.currentUser?.name && (
+          <div className="fill-banner-user">填写人：{survey.currentUser.name}</div>
+        )}
+      </div>
+
+      <div className="fill-body">
+        {/* 悬浮进度卡片 */}
+        <div className="fill-progress-card">
+          <div className="fill-progress-text">
+            <span>已完成 <strong>{answeredCount}</strong> / 共 <strong>{totalCount}</strong> 题</span>
+            <span className="fill-progress-pct">{progressPct}%</span>
+          </div>
+          <div className="fill-progress-bar-bg">
+            <div className="fill-progress-bar-fill" style={{ width: `${progressPct}%` }} />
+          </div>
+        </div>
+
+        {/* 题目列表 */}
         <Form layout="vertical" onFinish={submit}>
           {visibleQuestions.map((question: Question, index: number) => {
             const questionNo = String(index + 1).padStart(2, '0');
+            const isAnswered = question.type !== 'description' && (() => {
+              const val = answers[question.id];
+              if (Array.isArray(val)) return val.length > 0;
+              return val !== undefined && val !== '';
+            })();
+
             if (question.type === 'description') {
               return (
-                <div key={question.id} className="fill-question-block fill-description-block">
+                <div key={question.id} className="fill-question-card fill-description-block">
                   <div className="fill-question-heading">
                     <span className="fill-question-index">{questionNo}</span>
                     <span className="fill-question-title">{question.description || question.label}</span>
@@ -1496,7 +2043,7 @@ function FillPage() {
             }
 
             return (
-              <div key={question.id} className="fill-question-block">
+              <div key={question.id} className={`fill-question-card${isAnswered ? ' answered' : ''}`}>
                 <div className="fill-question-heading">
                   {question.required && <span className="fill-required-mark">*</span>}
                   <span className="fill-question-index">{questionNo}</span>
@@ -1507,8 +2054,16 @@ function FillPage() {
               </div>
             );
           })}
-          <Button type="primary" htmlType="submit" block loading={submitting} disabled={submitting}>
-            提交
+          <Button
+            type="primary"
+            htmlType="submit"
+            block
+            size="large"
+            loading={submitting}
+            disabled={submitting}
+            className="fill-submit-btn"
+          >
+            提交问卷
           </Button>
         </Form>
       </div>

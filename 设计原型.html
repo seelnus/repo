@@ -1,0 +1,1378 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>内部问卷系统 — 设计原型</title>
+  <style>
+    /* ===== TOKEN SYSTEM ===== */
+    :root {
+      --white: #FFFFFF;
+      --bg: #F5F5F7;
+      --text-primary: #1D1D1F;
+      --text-secondary: #6E6E73;
+      --text-tertiary: #AEAEB2;
+      --accent: #0071E3;
+      --accent-hover: #0077ED;
+      --accent-light: rgba(0, 113, 227, 0.10);
+      --border: rgba(0,0,0,0.10);
+      --border-strong: rgba(0,0,0,0.16);
+      --danger: #FF3B30;
+      --success: #34C759;
+      --warning: #FF9500;
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 18px;
+      --shadow-card: 0 1px 3px rgba(0,0,0,0.06), 0 4px 16px rgba(0,0,0,0.04);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+      background: var(--bg);
+      color: var(--text-primary);
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ===== PROTOTYPE CHROME ===== */
+    .prototype-nav {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 1000;
+      background: rgba(25,25,25,0.92);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 8px 16px;
+      height: 40px;
+    }
+
+    .prototype-nav-label {
+      color: rgba(255,255,255,0.35);
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      margin-right: 8px;
+    }
+
+    .proto-tab {
+      padding: 4px 14px;
+      border-radius: 20px;
+      border: none;
+      background: transparent;
+      color: rgba(255,255,255,0.55);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.15s;
+    }
+
+    .proto-tab:hover { color: white; background: rgba(255,255,255,0.1); }
+    .proto-tab.active { background: var(--accent); color: white; }
+
+    .proto-view { display: none; padding-top: 40px; min-height: 100vh; }
+    .proto-view.active { display: block; }
+
+    /* ===== SHARED BUTTONS ===== */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 16px;
+      border-radius: var(--radius-sm);
+      border: none;
+      font-size: 14px;
+      font-family: inherit;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+      text-decoration: none;
+    }
+
+    .btn-primary { background: var(--accent); color: white; }
+    .btn-primary:hover { background: var(--accent-hover); }
+
+    .btn-secondary {
+      background: var(--white);
+      color: var(--text-primary);
+      border: 1px solid var(--border-strong);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    }
+    .btn-secondary:hover { background: #F8F8FA; }
+
+    .btn-danger {
+      background: var(--white);
+      color: var(--danger);
+      border: 1px solid rgba(255,59,48,0.28);
+    }
+    .btn-danger:hover { background: rgba(255,59,48,0.04); }
+
+    .btn-ghost { background: transparent; color: var(--accent); border: none; padding: 4px 0; }
+
+    .btn-sm { padding: 5px 12px; font-size: 13px; }
+
+    /* ===== SHARED INPUTS ===== */
+    input, textarea, select {
+      font-family: inherit;
+      font-size: 14px;
+      color: var(--text-primary);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      background: var(--white);
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+
+    input:focus, textarea:focus, select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(0,113,227,0.18);
+    }
+
+    .input-label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      letter-spacing: 0.01em;
+      margin-bottom: 6px;
+    }
+
+    .form-item { margin-bottom: 18px; }
+
+    /* ===== SHARED CARDS ===== */
+    .card {
+      background: var(--white);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-card);
+    }
+
+    .card-header {
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .card-title { font-size: 15px; font-weight: 600; }
+
+    /* ===== SHARED TAGS ===== */
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .tag-blue  { background: rgba(0,113,227,0.10); color: #0071E3; }
+    .tag-green { background: rgba(52,199,89,0.12); color: #1A8A39; }
+    .tag-orange { background: rgba(255,149,0,0.12); color: #C05700; }
+    .tag-gray  { background: rgba(0,0,0,0.06); color: var(--text-secondary); }
+
+    /* ===== SHARED SWITCH ===== */
+    .switch {
+      width: 44px; height: 26px;
+      background: var(--success);
+      border-radius: 13px;
+      position: relative;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: background 0.2s;
+      display: inline-block;
+    }
+
+    .switch::after {
+      content: '';
+      position: absolute;
+      width: 22px; height: 22px;
+      top: 2px; left: 20px;
+      background: white;
+      border-radius: 50%;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.22);
+      transition: left 0.2s;
+    }
+
+    .switch.off { background: rgba(0,0,0,0.15); }
+    .switch.off::after { left: 2px; }
+
+    /* ===== SHARED TABLE ===== */
+    .data-table { width: 100%; border-collapse: collapse; }
+
+    .data-table th {
+      padding: 10px 16px;
+      text-align: left;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      letter-spacing: 0.01em;
+      border-bottom: 1px solid var(--border);
+      background: #FAFAFA;
+    }
+
+    .data-table td {
+      padding: 13px 16px;
+      border-bottom: 1px solid rgba(0,0,0,0.04);
+      vertical-align: middle;
+      font-size: 14px;
+    }
+
+    .data-table tr:last-child td { border-bottom: none; }
+    .data-table tr:hover td { background: rgba(0,0,0,0.015); }
+
+    .td-actions { display: flex; gap: 6px; align-items: center; }
+
+    /* ===== SIDEBAR (shared by admin & editor) ===== */
+    .sidebar {
+      width: 220px;
+      flex-shrink: 0;
+      background: var(--white);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      position: sticky;
+      top: 40px;
+      height: calc(100vh - 40px);
+      overflow: hidden;
+    }
+
+    .sidebar-brand {
+      padding: 18px 20px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .brand-name {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: -0.3px;
+    }
+
+    .brand-sub {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      margin-top: 1px;
+    }
+
+    .sidebar-nav { padding: 10px; flex: 1; overflow-y: auto; }
+
+    .nav-section-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-tertiary);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      padding: 10px 10px 4px;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      color: var(--text-secondary);
+      font-size: 14px;
+      transition: all 0.12s;
+      margin-bottom: 2px;
+    }
+
+    .nav-item:hover { background: rgba(0,0,0,0.04); color: var(--text-primary); }
+
+    .nav-item.active {
+      background: var(--accent-light);
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .nav-icon { width: 18px; height: 18px; flex-shrink: 0; opacity: 0.8; }
+
+    .sidebar-footer {
+      padding: 10px;
+      border-top: 1px solid var(--border);
+    }
+
+    .user-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+
+    .user-row:hover { background: rgba(0,0,0,0.04); }
+
+    .user-avatar {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #0071E3, #00A3FF);
+      display: grid;
+      place-items: center;
+      color: white;
+      font-size: 12px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .user-name { font-size: 13px; font-weight: 500; }
+    .user-hint { font-size: 11px; color: var(--text-tertiary); }
+
+    /* ===== ADMIN HEADER ===== */
+    .admin-header {
+      height: 52px;
+      background: var(--white);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 28px;
+      gap: 12px;
+      position: sticky;
+      top: 40px;
+      z-index: 10;
+    }
+
+    .page-heading {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.4px;
+      flex: 1;
+    }
+
+    /* ===== SEARCH INPUT ===== */
+    .search-wrap { position: relative; }
+
+    .search-wrap svg {
+      position: absolute;
+      left: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      pointer-events: none;
+    }
+
+    .search-input {
+      height: 32px;
+      padding: 0 12px 0 32px;
+      border-radius: 8px;
+      width: 200px;
+      font-size: 13px;
+    }
+
+    .select-filter {
+      height: 32px;
+      padding: 0 28px 0 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--text-primary);
+      appearance: none;
+      -webkit-appearance: none;
+      cursor: pointer;
+    }
+
+    /* ===========================
+       VIEW 1: LOGIN
+    =========================== */
+    #view-login {
+      min-height: calc(100vh - 40px);
+      background: var(--bg);
+    }
+
+    .login-card {
+      width: min(380px, calc(100vw - 32px));
+      background: var(--white);
+      border-radius: var(--radius-lg);
+      box-shadow: 0 4px 40px rgba(0,0,0,0.10), 0 1px 4px rgba(0,0,0,0.06);
+      padding: 40px 36px 36px;
+    }
+
+    .login-logo {
+      width: 52px; height: 52px;
+      background: linear-gradient(145deg, #0071E3 0%, #34AADC 100%);
+      border-radius: 14px;
+      margin: 0 auto 22px;
+      display: grid;
+      place-items: center;
+    }
+
+    .login-title {
+      text-align: center;
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 6px;
+      letter-spacing: -0.4px;
+    }
+
+    .login-subtitle {
+      text-align: center;
+      font-size: 13px;
+      color: var(--text-tertiary);
+      margin-bottom: 28px;
+    }
+
+    .login-input {
+      width: 100%;
+      height: 42px;
+      padding: 0 14px;
+      border-radius: 10px;
+      font-size: 15px;
+      border: 1px solid var(--border-strong);
+      background: var(--bg);
+    }
+
+    .login-input:focus {
+      background: var(--white);
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(0,113,227,0.18);
+    }
+
+    .login-btn {
+      width: 100%;
+      height: 42px;
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      margin-top: 6px;
+      transition: background 0.15s;
+    }
+
+    .login-btn:hover { background: var(--accent-hover); }
+
+    .login-hint {
+      text-align: center;
+      font-size: 12px;
+      color: var(--text-tertiary);
+      margin-top: 14px;
+    }
+
+    /* ===========================
+       VIEW 2: ADMIN / SURVEY LIST
+    =========================== */
+    #view-admin {
+      min-height: calc(100vh - 40px);
+    }
+
+    .admin-main {
+      flex: 1;
+      min-width: 0;
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .admin-content { padding: 24px 28px; }
+
+    .toolbar-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+
+    .toolbar-filters { display: flex; gap: 8px; align-items: center; }
+
+    /* ===========================
+       VIEW 3: SURVEY EDITOR
+    =========================== */
+    #view-editor {
+      min-height: calc(100vh - 40px);
+    }
+
+    .editor-palette {
+      width: 220px;
+      flex-shrink: 0;
+      background: var(--white);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      position: sticky;
+      top: 40px;
+      height: calc(100vh - 40px);
+      overflow: hidden;
+    }
+
+    .palette-scroll { flex: 1; overflow-y: auto; padding: 10px 14px; }
+
+    .palette-section-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-tertiary);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin: 10px 2px 7px;
+    }
+
+    .palette-section-label:first-child { margin-top: 2px; }
+
+    .palette-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px; }
+
+    .palette-btn {
+      height: 36px;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      background: var(--white);
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 500;
+      font-family: inherit;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      transition: all 0.12s;
+    }
+
+    .palette-btn:hover { background: var(--bg); color: var(--text-primary); }
+    .palette-btn.active { background: var(--accent-light); border-color: rgba(0,113,227,0.28); color: var(--accent); font-weight: 600; }
+
+    .palette-actions {
+      padding: 12px 14px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .editor-main-wrap {
+      flex: 1;
+      min-width: 0;
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .editor-header {
+      height: 52px;
+      background: var(--white);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 24px;
+      gap: 10px;
+      position: sticky;
+      top: 40px;
+      z-index: 5;
+    }
+
+    .breadcrumb-sep { color: var(--border-strong); }
+
+    .editor-canvas { max-width: 680px; margin: 0 auto; padding: 24px; }
+
+    .meta-card {
+      background: var(--white);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-card);
+      padding: 20px 24px;
+      margin-bottom: 16px;
+    }
+
+    .q-block {
+      background: var(--white);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-card);
+      padding: 18px 20px;
+      margin-bottom: 12px;
+      border: 1.5px solid transparent;
+      cursor: pointer;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+
+    .q-block:hover { border-color: var(--border-strong); }
+
+    .q-block.active {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(0,113,227,0.10), var(--shadow-card);
+    }
+
+    .q-head { display: flex; align-items: flex-start; gap: 10px; }
+
+    .q-num {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--accent);
+      flex-shrink: 0;
+      padding-top: 2px;
+      min-width: 22px;
+    }
+
+    .q-title {
+      flex: 1;
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--text-primary);
+      line-height: 1.5;
+    }
+
+    .q-type-badge {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-tertiary);
+      padding: 2px 8px;
+      background: var(--bg);
+      border-radius: 5px;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    .q-options { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; max-width: 480px; }
+
+    .q-option-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      background: var(--bg);
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    .q-option-dot {
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      border: 1.5px solid var(--text-tertiary);
+      flex-shrink: 0;
+    }
+
+    .q-footer {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .q-footer label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+
+    .q-footer .logic-btn {
+      background: none;
+      border: none;
+      color: var(--accent);
+      font-size: 13px;
+      cursor: pointer;
+      font-family: inherit;
+      padding: 0;
+    }
+
+    .q-rating-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 14px; }
+
+    .q-rating-cell {
+      width: 40px; height: 40px;
+      border-radius: 8px;
+      background: var(--bg);
+      border: 1px solid var(--border-strong);
+      display: grid;
+      place-items: center;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    .q-placeholder {
+      width: 100%;
+      height: 72px;
+      border-radius: 8px;
+      background: var(--bg);
+      border: 1px solid var(--border-strong);
+      margin-top: 14px;
+      display: flex;
+      align-items: center;
+      padding: 0 14px;
+      color: var(--text-tertiary);
+      font-size: 14px;
+    }
+
+    .add-q-zone {
+      border: 1.5px dashed var(--border-strong);
+      border-radius: var(--radius-md);
+      text-align: center;
+      padding: 20px;
+      color: var(--text-tertiary);
+      font-size: 14px;
+    }
+
+    /* ===========================
+       VIEW 4: FILL PAGE (H5)
+    =========================== */
+    #view-fill {
+      background: var(--bg);
+      min-height: calc(100vh - 40px);
+    }
+
+    /* Signature element: progress bar */
+    .fill-progress-bar {
+      width: 100%;
+      height: 3px;
+      background: rgba(0,0,0,0.08);
+      position: sticky;
+      top: 40px;
+      z-index: 10;
+    }
+
+    .fill-progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent) 0%, #34AADC 100%);
+      width: 60%;
+      border-radius: 0 2px 2px 0;
+      transition: width 0.4s cubic-bezier(0.4,0,0.2,1);
+    }
+
+    .fill-container {
+      width: min(480px, 100%);
+      padding-bottom: 60px;
+    }
+
+    .fill-hero {
+      background: var(--white);
+      padding: 28px 20px 20px;
+    }
+
+    .fill-survey-title {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.4px;
+      color: var(--text-primary);
+      margin-bottom: 6px;
+      line-height: 1.3;
+    }
+
+    .fill-user-line { font-size: 13px; color: var(--text-tertiary); }
+
+    .fill-question {
+      background: var(--white);
+      margin-top: 8px;
+      padding: 20px;
+    }
+
+    .fill-q-heading {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .fill-q-index {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--accent);
+      flex-shrink: 0;
+      min-width: 26px;
+    }
+
+    .fill-q-text {
+      font-size: 16px;
+      font-weight: 500;
+      color: var(--text-primary);
+      line-height: 1.5;
+    }
+
+    .fill-req { color: var(--danger); margin-right: 2px; }
+
+    /* Choices */
+    .fill-choices { display: flex; flex-direction: column; gap: 10px; }
+
+    .fill-choice {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 46px;
+      padding: 10px 16px;
+      border: 1px solid var(--border-strong);
+      border-radius: 10px;
+      background: var(--bg);
+      cursor: pointer;
+      font-size: 15px;
+      color: var(--text-primary);
+      transition: all 0.15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .fill-choice:hover { border-color: rgba(0,113,227,0.35); }
+
+    .fill-choice.selected {
+      border-color: var(--accent);
+      background: rgba(0,113,227,0.06);
+    }
+
+    .choice-dot {
+      width: 18px; height: 18px;
+      border-radius: 50%;
+      border: 1.5px solid var(--text-tertiary);
+      flex-shrink: 0;
+      transition: all 0.15s;
+    }
+
+    .fill-choice.selected .choice-dot {
+      border-color: var(--accent);
+      border-width: 5px;
+      background: white;
+      box-shadow: inset 0 0 0 3px var(--accent);
+    }
+
+    /* Rating */
+    .rating-labels-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--text-tertiary);
+      margin-bottom: 10px;
+    }
+
+    .fill-rating { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    .rating-btn {
+      width: 44px; height: 44px;
+      border-radius: 10px;
+      background: var(--bg);
+      border: 1px solid var(--border-strong);
+      font-size: 16px;
+      font-weight: 500;
+      color: var(--text-primary);
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.15s;
+      display: grid;
+      place-items: center;
+    }
+
+    .rating-btn:hover { background: rgba(0,113,227,0.08); border-color: var(--accent); color: var(--accent); }
+    .rating-btn.selected { background: var(--accent); border-color: var(--accent); color: white; }
+
+    /* Text input */
+    .fill-text-input {
+      width: 100%;
+      min-height: 80px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      font-size: 15px;
+      line-height: 1.6;
+      border: 1px solid var(--border-strong);
+      background: var(--bg);
+      resize: none;
+      color: var(--text-primary);
+    }
+
+    /* Submit */
+    .fill-submit-area {
+      background: var(--white);
+      margin-top: 8px;
+      padding: 20px;
+    }
+
+    .fill-submit-btn {
+      width: 100%;
+      height: 50px;
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 14px;
+      font-size: 17px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.15s;
+      letter-spacing: -0.2px;
+    }
+
+    .fill-submit-btn:hover { background: var(--accent-hover); }
+
+    .fill-submit-note {
+      text-align: center;
+      margin-top: 12px;
+      font-size: 12px;
+      color: var(--text-tertiary);
+    }
+  </style>
+</head>
+<body>
+
+<!-- ===== PROTOTYPE CHROME ===== -->
+<nav class="prototype-nav">
+  <span class="prototype-nav-label">设计原型</span>
+  <button class="proto-tab active" onclick="showView('login', this)">登录页</button>
+  <button class="proto-tab" onclick="showView('admin', this)">问卷管理</button>
+  <button class="proto-tab" onclick="showView('editor', this)">问卷编辑</button>
+  <button class="proto-tab" onclick="showView('fill', this)">用户填写</button>
+</nav>
+
+
+<!-- ===========================
+     VIEW 1: LOGIN
+=========================== -->
+<div id="view-login" class="proto-view active">
+  <div style="min-height:calc(100vh - 40px); background:var(--bg); display:grid; place-items:center;">
+    <div class="login-card">
+      <div class="login-logo">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="9 11 12 14 22 4"/>
+          <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+        </svg>
+      </div>
+      <div class="login-title">内部问卷系统</div>
+      <div class="login-subtitle">仅限授权管理员访问</div>
+
+      <div class="form-item">
+        <label class="input-label">手机号</label>
+        <input class="login-input" type="text" value="13800000000" autocomplete="off">
+      </div>
+      <div class="form-item" style="margin-bottom:20px;">
+        <label class="input-label">密码</label>
+        <input class="login-input" type="password" value="admin123456">
+      </div>
+      <button class="login-btn">登录</button>
+      <div class="login-hint">如遇登录问题，请联系系统管理员</div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ===========================
+     VIEW 2: ADMIN – SURVEY LIST
+=========================== -->
+<div id="view-admin" class="proto-view">
+  <div style="display:flex; min-height:calc(100vh - 40px);">
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-name">问卷系统</div>
+        <div class="brand-sub">内部管理平台</div>
+      </div>
+      <nav class="sidebar-nav">
+        <div class="nav-section-label">管理</div>
+
+        <div class="nav-item active">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2.5"/>
+            <path d="M3 9h18M9 21V9"/>
+          </svg>
+          问卷管理
+        </div>
+
+        <div class="nav-item">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+            <circle cx="9" cy="7" r="4"/>
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>
+          </svg>
+          白名单管理
+        </div>
+
+        <div class="nav-item">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+            <circle cx="12" cy="7" r="4"/>
+          </svg>
+          联系人
+        </div>
+
+        <div class="nav-item">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="8" r="4"/>
+            <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+          </svg>
+          后台成员
+        </div>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="user-row">
+          <div class="user-avatar">管</div>
+          <div>
+            <div class="user-name">系统管理员</div>
+            <div class="user-hint">退出登录</div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <div class="admin-main">
+      <div class="admin-header">
+        <div class="page-heading">问卷管理</div>
+        <button class="btn btn-primary btn-sm">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+          新建问卷
+        </button>
+      </div>
+      <div class="admin-content">
+        <div class="card">
+          <div style="padding:16px 20px 12px;">
+            <div class="toolbar-row">
+              <div class="toolbar-filters">
+                <div class="search-wrap">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                  <input class="search-input" type="text" placeholder="搜索问卷名称">
+                </div>
+                <select class="select-filter">
+                  <option>全部类型</option>
+                  <option>问卷考核</option>
+                  <option>案例收集</option>
+                  <option>宣传文档类</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>问卷名称</th>
+                <th>类型</th>
+                <th>启用状态</th>
+                <th>创建时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style="font-weight:500;">2024 年度绩效考核问卷</td>
+                <td><span class="tag tag-blue">问卷考核</span></td>
+                <td><span class="switch"></span></td>
+                <td style="color:var(--text-secondary); font-size:13px;">2024-06-20 10:32</td>
+                <td>
+                  <div class="td-actions">
+                    <button class="btn btn-secondary btn-sm">编辑</button>
+                    <button class="btn btn-secondary btn-sm">分享</button>
+                    <button class="btn btn-secondary btn-sm">数据</button>
+                    <button class="btn btn-secondary btn-sm">导出</button>
+                    <button class="btn btn-danger btn-sm">删除</button>
+                  </div>
+                </td>
+              </tr>
+              <tr>
+                <td style="font-weight:500;">Q2 案例收集 — 华东区</td>
+                <td><span class="tag tag-green">案例收集</span></td>
+                <td><span class="switch"></span></td>
+                <td style="color:var(--text-secondary); font-size:13px;">2024-06-18 09:14</td>
+                <td>
+                  <div class="td-actions">
+                    <button class="btn btn-secondary btn-sm">编辑</button>
+                    <button class="btn btn-secondary btn-sm">分享</button>
+                    <button class="btn btn-secondary btn-sm">数据</button>
+                    <button class="btn btn-secondary btn-sm">导出</button>
+                    <button class="btn btn-danger btn-sm">删除</button>
+                  </div>
+                </td>
+              </tr>
+              <tr>
+                <td style="font-weight:500;">新员工入职须知</td>
+                <td><span class="tag tag-orange">宣传文档类</span></td>
+                <td><span class="switch off"></span></td>
+                <td style="color:var(--text-secondary); font-size:13px;">2024-06-15 15:47</td>
+                <td>
+                  <div class="td-actions">
+                    <button class="btn btn-secondary btn-sm">编辑</button>
+                    <button class="btn btn-secondary btn-sm">分享</button>
+                    <button class="btn btn-secondary btn-sm">数据</button>
+                    <button class="btn btn-secondary btn-sm">导出</button>
+                    <button class="btn btn-danger btn-sm">删除</button>
+                  </div>
+                </td>
+              </tr>
+              <tr>
+                <td style="font-weight:500;">员工满意度调研 2024 H1</td>
+                <td><span class="tag tag-blue">问卷考核</span></td>
+                <td><span class="switch off"></span></td>
+                <td style="color:var(--text-secondary); font-size:13px;">2024-06-10 11:00</td>
+                <td>
+                  <div class="td-actions">
+                    <button class="btn btn-secondary btn-sm">编辑</button>
+                    <button class="btn btn-secondary btn-sm">分享</button>
+                    <button class="btn btn-secondary btn-sm">数据</button>
+                    <button class="btn btn-secondary btn-sm">导出</button>
+                    <button class="btn btn-danger btn-sm">删除</button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div style="padding:14px 20px; border-top:1px solid var(--border); font-size:13px; color:var(--text-tertiary);">共 4 份问卷</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ===========================
+     VIEW 3: SURVEY EDITOR
+=========================== -->
+<div id="view-editor" class="proto-view">
+  <div style="display:flex; min-height:calc(100vh - 40px);">
+
+    <!-- Palette sidebar -->
+    <aside class="editor-palette">
+      <div class="sidebar-brand">
+        <div class="brand-name" style="font-size:14px;">选择题型</div>
+      </div>
+      <div class="palette-scroll">
+        <div class="palette-section-label">选择题</div>
+        <div class="palette-grid">
+          <button class="palette-btn active">◎ 单选</button>
+          <button class="palette-btn">☑ 多选</button>
+        </div>
+        <div class="palette-grid" style="grid-template-columns:1fr;">
+          <button class="palette-btn">★ 评分打分</button>
+        </div>
+
+        <div class="palette-section-label">文本输入</div>
+        <div class="palette-grid">
+          <button class="palette-btn">文 描述</button>
+          <button class="palette-btn">─ 单行</button>
+        </div>
+        <div class="palette-grid" style="grid-template-columns:1fr;">
+          <button class="palette-btn">≡ 多行文本</button>
+        </div>
+
+        <div class="palette-section-label">高级题型</div>
+        <div class="palette-grid">
+          <button class="palette-btn">⬆ 附件</button>
+          <button class="palette-btn">📅 日期</button>
+        </div>
+      </div>
+      <div class="palette-actions">
+        <button class="btn btn-primary" style="width:100%; justify-content:center;">分享链接</button>
+        <button class="btn btn-secondary" style="width:100%; justify-content:center;">发布问卷</button>
+        <button class="btn btn-secondary" style="width:100%; justify-content:center;">返回列表</button>
+      </div>
+    </aside>
+
+    <!-- Main content -->
+    <div class="editor-main-wrap">
+      <div class="editor-header">
+        <button class="btn btn-ghost btn-sm" style="gap:4px; font-size:13px;">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+          问卷管理
+        </button>
+        <span class="breadcrumb-sep">›</span>
+        <span style="font-size:14px; font-weight:600; color:var(--text-primary);">编辑问卷</span>
+      </div>
+      <div class="editor-canvas">
+
+        <!-- Meta -->
+        <div class="meta-card">
+          <div class="form-item" style="margin-bottom:14px;">
+            <label class="input-label">问卷名称</label>
+            <input style="width:100%; height:42px; padding:0 14px; border-radius:10px; font-size:15px; font-weight:500;" value="2024 年度绩效考核问卷">
+          </div>
+          <div class="form-item" style="margin-bottom:0;">
+            <label class="input-label">类型标签</label>
+            <select style="width:100%; height:36px; padding:0 10px; border-radius:8px; font-size:14px; background:var(--bg);">
+              <option>问卷考核</option>
+              <option>案例收集</option>
+              <option>宣传文档类</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Q1 active -->
+        <div class="q-block active">
+          <div class="q-head">
+            <span class="q-num">Q1</span>
+            <span class="q-title">您对本次培训内容的满意程度如何？</span>
+            <span class="q-type-badge">单选题</span>
+            <button class="btn btn-danger btn-sm" style="padding:4px 10px; font-size:12px; margin-left:auto;">删除</button>
+          </div>
+          <div class="q-options">
+            <div class="q-option-row"><span class="q-option-dot"></span> 非常满意</div>
+            <div class="q-option-row"><span class="q-option-dot"></span> 比较满意</div>
+            <div class="q-option-row"><span class="q-option-dot"></span> 一般</div>
+            <div class="q-option-row"><span class="q-option-dot"></span> 不满意</div>
+          </div>
+          <div class="q-footer">
+            <label><input type="checkbox" checked> 必填</label>
+            <button class="logic-btn">显示条件</button>
+          </div>
+        </div>
+
+        <!-- Q2 rating -->
+        <div class="q-block">
+          <div class="q-head">
+            <span class="q-num">Q2</span>
+            <span class="q-title">请对培训讲师进行评分</span>
+            <span class="q-type-badge">评分</span>
+            <button class="btn btn-danger btn-sm" style="padding:4px 10px; font-size:12px; margin-left:auto;">删除</button>
+          </div>
+          <div style="margin-top:12px;">
+            <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--text-tertiary); margin-bottom:8px; max-width:460px;">
+              <span>非常不满意</span><span>非常满意</span>
+            </div>
+            <div class="q-rating-row">
+              <div class="q-rating-cell">1</div>
+              <div class="q-rating-cell">2</div>
+              <div class="q-rating-cell">3</div>
+              <div class="q-rating-cell">4</div>
+              <div class="q-rating-cell">5</div>
+              <div class="q-rating-cell">6</div>
+              <div class="q-rating-cell">7</div>
+              <div class="q-rating-cell">8</div>
+              <div class="q-rating-cell">9</div>
+              <div class="q-rating-cell">10</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Q3 textarea -->
+        <div class="q-block">
+          <div class="q-head">
+            <span class="q-num">Q3</span>
+            <span class="q-title">您还有哪些建议或反馈？</span>
+            <span class="q-type-badge">多行文本</span>
+            <button class="btn btn-danger btn-sm" style="padding:4px 10px; font-size:12px; margin-left:auto;">删除</button>
+          </div>
+          <div class="q-placeholder">填写者将在此处输入多行文本…</div>
+        </div>
+
+        <div class="add-q-zone">从左侧选择题型以添加更多问题</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ===========================
+     VIEW 4: FILL PAGE
+=========================== -->
+<div id="view-fill" class="proto-view">
+  <div style="width:100%; min-height:calc(100vh - 40px); background:var(--bg); display:flex; flex-direction:column; align-items:center;">
+
+    <!-- Signature: progress bar -->
+    <div class="fill-progress-bar">
+      <div class="fill-progress-fill" id="fill-progress"></div>
+    </div>
+
+    <div class="fill-container">
+
+      <!-- Survey header -->
+      <div class="fill-hero">
+        <div class="fill-survey-title">2024 年度绩效考核问卷</div>
+        <div class="fill-user-line">当前用户：张三 · 请如实作答</div>
+      </div>
+
+      <!-- Q1 -->
+      <div class="fill-question">
+        <div class="fill-q-heading">
+          <span class="fill-q-index">01</span>
+          <span class="fill-q-text"><span class="fill-req">*</span>您对本次培训内容的满意程度如何？</span>
+        </div>
+        <div class="fill-choices" id="q1-choices">
+          <div class="fill-choice selected" onclick="selectChoice('q1-choices', this)">
+            <span class="choice-dot"></span><span>非常满意</span>
+          </div>
+          <div class="fill-choice" onclick="selectChoice('q1-choices', this)">
+            <span class="choice-dot"></span><span>比较满意</span>
+          </div>
+          <div class="fill-choice" onclick="selectChoice('q1-choices', this)">
+            <span class="choice-dot"></span><span>一般</span>
+          </div>
+          <div class="fill-choice" onclick="selectChoice('q1-choices', this)">
+            <span class="choice-dot"></span><span>不满意</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Q2 -->
+      <div class="fill-question">
+        <div class="fill-q-heading">
+          <span class="fill-q-index">02</span>
+          <span class="fill-q-text"><span class="fill-req">*</span>请对培训讲师进行评分（1–10 分）</span>
+        </div>
+        <div class="rating-labels-row">
+          <span>非常不满意</span>
+          <span>非常满意</span>
+        </div>
+        <div class="fill-rating" id="q2-rating">
+          <button class="rating-btn" onclick="selectRating('q2-rating', this)">1</button>
+          <button class="rating-btn" onclick="selectRating('q2-rating', this)">2</button>
+          <button class="rating-btn" onclick="selectRating('q2-rating', this)">3</button>
+          <button class="rating-btn" onclick="selectRating('q2-rating', this)">4</button>
+          <button class="rating-btn" onclick="selectRating('q2-rating', this)">5</button>
+          <button class="rating-btn" onclick="selectRating('q2-rating', this)">6</button>
+          <button class="rating-btn" onclick="selectRating('q2-rating', this)">7</button>
+          <button class="rating-btn selected" onclick="selectRating('q2-rating', this)">8</button>
+          <button class="rating-btn" onclick="selectRating('q2-rating', this)">9</button>
+          <button class="rating-btn" onclick="selectRating('q2-rating', this)">10</button>
+        </div>
+      </div>
+
+      <!-- Q3 -->
+      <div class="fill-question">
+        <div class="fill-q-heading">
+          <span class="fill-q-index">03</span>
+          <span class="fill-q-text">您还有哪些建议或反馈？</span>
+        </div>
+        <textarea class="fill-text-input" placeholder="请输入…" oninput="updateProgress()"></textarea>
+      </div>
+
+      <!-- Submit -->
+      <div class="fill-submit-area">
+        <button class="fill-submit-btn" onclick="submitForm()">提交</button>
+        <div class="fill-submit-note">提交后不可修改，请确认内容无误</div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+
+<script>
+  function showView(name, btn) {
+    document.querySelectorAll('.proto-view').forEach(v => v.classList.remove('active'));
+    document.querySelectorAll('.proto-tab').forEach(t => t.classList.remove('active'));
+    document.getElementById('view-' + name).classList.add('active');
+    btn.classList.add('active');
+  }
+
+  function selectChoice(groupId, el) {
+    document.getElementById(groupId).querySelectorAll('.fill-choice').forEach(c => c.classList.remove('selected'));
+    el.classList.add('selected');
+    updateProgress();
+  }
+
+  function selectRating(groupId, el) {
+    document.getElementById(groupId).querySelectorAll('.rating-btn').forEach(b => b.classList.remove('selected'));
+    el.classList.add('selected');
+    updateProgress();
+  }
+
+  function updateProgress() {
+    const q1Done = document.querySelector('#q1-choices .fill-choice.selected') !== null;
+    const q2Done = document.querySelector('#q2-rating .rating-btn.selected') !== null;
+    const q3Done = document.querySelector('.fill-text-input').value.trim().length > 0;
+    const count = [q1Done, q2Done, q3Done].filter(Boolean).length;
+    const pct = Math.round((count / 3) * 100);
+    document.getElementById('fill-progress').style.width = pct + '%';
+  }
+
+  function submitForm() {
+    alert('✅ 提交成功！（原型演示）');
+  }
+
+  updateProgress();
+</script>
+</body>
+</html>

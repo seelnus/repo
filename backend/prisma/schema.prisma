@@ -28,6 +28,8 @@ model AdminUser {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
+  createdWhitelists SurveyWhitelist[]
+
   @@map("admin_users")
 }
 
@@ -42,6 +44,8 @@ model Contact {
   tags       String?  @db.VarChar(255)
   createdAt  DateTime @default(now()) @map("created_at")
   updatedAt  DateTime @updatedAt @map("updated_at")
+
+  whitelistMembers WhitelistMember[]
 
   @@map("contacts")
 }
@@ -69,8 +73,37 @@ model Survey {
   updatedAt  DateTime     @updatedAt @map("updated_at")
 
   responses SurveyResponse[]
+  whitelist SurveyWhitelist?
 
   @@map("surveys")
+}
+
+model SurveyWhitelist {
+  id        Int      @id @default(autoincrement()) @db.UnsignedInt
+  surveyId  Int      @unique @map("survey_id") @db.UnsignedInt
+  enabled   Boolean  @default(true)
+  createdBy Int      @map("created_by") @db.UnsignedInt
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  survey  Survey            @relation(fields: [surveyId], references: [id])
+  creator AdminUser         @relation(fields: [createdBy], references: [id])
+  members WhitelistMember[]
+
+  @@map("survey_whitelists")
+}
+
+model WhitelistMember {
+  id          Int      @id @default(autoincrement()) @db.UnsignedInt
+  whitelistId Int      @map("whitelist_id") @db.UnsignedInt
+  contactId   Int      @map("contact_id") @db.UnsignedInt
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  whitelist SurveyWhitelist @relation(fields: [whitelistId], references: [id], onDelete: Cascade)
+  contact   Contact         @relation(fields: [contactId], references: [id])
+
+  @@unique([whitelistId, contactId], map: "uk_wl_contact")
+  @@map("whitelist_members")
 }
 
 model SurveyResponse {
@@ -83,7 +116,6 @@ model SurveyResponse {
   survey  Survey           @relation(fields: [surveyId], references: [id])
   comment ResponseComment?
 
-  @@unique([surveyId, wecomUserid], map: "uk_one_submission")
   @@map("survey_responses")
 }
 

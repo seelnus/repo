@@ -147,6 +147,130 @@ export class AppService {
     });
   }
 
+  async listWhitelists() {
+    const whitelists = await this.prisma.surveyWhitelist.findMany({
+      include: { survey: true, members: true },
+      orderBy: { updatedAt: 'desc' },
+    });
+    return whitelists
+      .filter((item) => !item.survey.isDeleted)
+      .map((item) => ({
+        id: item.id,
+        surveyId: item.surveyId,
+        enabled: item.enabled,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+        memberCount: item.members.length,
+        survey: item.survey,
+      }));
+  }
+
+  async getWhitelist(surveyId: number) {
+    const whitelist = await this.prisma.surveyWhitelist.findUnique({
+      where: { surveyId },
+      include: {
+        survey: true,
+        members: { include: { contact: true }, orderBy: { createdAt: 'asc' } },
+      },
+    });
+    if (!whitelist || whitelist.survey.isDeleted) throw new NotFoundException('白名单不存在');
+    return {
+      id: whitelist.id,
+      surveyId: whitelist.surveyId,
+      enabled: whitelist.enabled,
+      createdAt: whitelist.createdAt,
+      updatedAt: whitelist.updatedAt,
+      survey: whitelist.survey,
+      members: whitelist.members.map((item) => item.contact),
+    };
+  }
+
+  async createWhitelist(adminId: number, data: { surveyId: number; enabled?: boolean; memberContactIds?: number[] }) {
+    const surveyId = Number(data.surveyId);
+    await this.getAdminSurvey(surveyId);
+    const exists = await this.prisma.surveyWhitelist.findUnique({ where: { surveyId } });
+    if (exists) throw new ConflictException('该问卷已配置白名单，请通过编辑入口更新');
+
+    const memberContactIds = this.uniqueIds(data.memberContactIds || []);
+    await this.assertContactsExist(memberContactIds);
+
+    const whitelist = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.surveyWhitelist.create({
+        data: {
+          surveyId,
+          enabled: data.enabled ?? true,
+          createdBy: adminId,
+        },
+      });
+      if (memberContactIds.length > 0) {
+        await tx.whitelistMember.createMany({
+          data: memberContactIds.map((contactId) => ({ whitelistId: created.id, contactId })),
+          skipDuplicates: true,
+        });
+      }
+      return created;
+    });
+    return this.getWhitelist(whitelist.surveyId);
+  }
+
+  async updateWhitelist(surveyId: number, data: { enabled?: boolean; memberContactIds?: number[] }) {
+    await this.getAdminSurvey(surveyId);
+    const whitelist = await this.prisma.surveyWhitelist.findUnique({ where: { surveyId } });
+    if (!whitelist) throw new NotFoundException('白名单不存在');
+
+    const memberContactIds = this.uniqueIds(data.memberContactIds || []);
+    await this.assertContactsExist(memberContactIds);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.surveyWhitelist.update({ where: { surveyId }, data: { enabled: data.enabled ?? true } });
+      await tx.whitelistMember.deleteMany({ where: { whitelistId: whitelist.id } });
+      if (memberContactIds.length > 0) {
+        await tx.whitelistMember.createMany({
+          data: memberContactIds.map((contactId) => ({ whitelistId: whitelist.id, contactId })),
+          skipDuplicates: true,
+        });
+      }
+    });
+    return this.getWhitelist(surveyId);
+  }
+
+  async deleteWhitelist(surveyId: number) {
+    const whitelist = await this.prisma.surveyWhitelist.findUnique({ where: { surveyId } });
+    if (!whitelist) throw new NotFoundException('白名单不存在');
+    await this.prisma.surveyWhitelist.delete({ where: { surveyId } });
+    return { ok: true };
+  }
+
+  async matchWhitelistCsv(rows: Array<{ name?: string; phone?: string }>) {
+    const normalizedRows = rows
+      .map((row) => ({ name: String(row.name || '').trim(), phone: String(row.phone || '').trim() }))
+      .filter((row) => row.name || row.phone);
+    const phones = Array.from(new Set(normalizedRows.map((row) => row.phone).filter(Boolean)));
+    const contacts = await this.prisma.contact.findMany({ where: { phone: { in: phones } } });
+    const contactByPhone = new Map(contacts.map((contact) => [contact.phone, contact]));
+    const matched: Array<{ contactId: number; name: string; phone: string; department: string | null }> = [];
+    const unmatched: Array<{ name: string; phone: string; reason: string }> = [];
+    const seenContactIds = new Set<number>();
+
+    for (const row of normalizedRows) {
+      if (!/^1\d{10}$/.test(row.phone)) {
+        unmatched.push({ ...row, reason: '手机号格式错误' });
+        continue;
+      }
+      const contact = contactByPhone.get(row.phone);
+      if (!contact) {
+        unmatched.push({ ...row, reason: '联系人中未找到' });
+        continue;
+      }
+      if (!seenContactIds.has(contact.id)) {
+        matched.push({ contactId: contact.id, name: contact.name, phone: contact.phone, department: contact.department });
+        seenContactIds.add(contact.id);
+      }
+    }
+
+    return { total: normalizedRows.length, matched, unmatched };
+  }
+
   async getAdminSurvey(id: number) {
     const survey = await this.prisma.survey.findFirst({ where: { id, isDeleted: false } });
     if (!survey) throw new NotFoundException('问卷不存在');
@@ -207,16 +331,14 @@ export class AppService {
     const survey = await this.prisma.survey.findUnique({ where: { shareToken } });
     if (!survey || survey.isDeleted) throw new NotFoundException('问卷不存在或已下线');
     if (survey.status !== SurveyStatus.published) throw new ForbiddenException('该问卷暂未开放');
+    await this.ensureWhitelistAccess(survey.id);
 
     if (survey.type === SurveyType.promotional_document) {
       return { ...survey, currentUser: mockUser, alreadySubmitted: false };
     }
 
     await this.ensureMockWecomUser();
-    const existing = await this.prisma.surveyResponse.findUnique({
-      where: { surveyId_wecomUserid: { surveyId: survey.id, wecomUserid: mockUser.wecomUserid } },
-    });
-    return { ...survey, currentUser: mockUser, alreadySubmitted: Boolean(existing) };
+    return { ...survey, currentUser: mockUser, alreadySubmitted: false };
   }
 
   async submitSurvey(shareToken: string, answersJson: Record<string, unknown>) {
@@ -224,8 +346,6 @@ export class AppService {
     if (survey.type === SurveyType.promotional_document) {
       throw new BadRequestException('宣传文档类不支持提交答卷');
     }
-    if (survey.alreadySubmitted) throw new ConflictException('您已提交过该问卷');
-
     this.validateAnswers(survey.schemaJson as SurveySchema, answersJson);
     return this.prisma.surveyResponse.create({
       data: {
@@ -395,5 +515,30 @@ export class AppService {
       create: mockUser,
       update: { name: mockUser.name, department: mockUser.department },
     });
+  }
+
+  private async ensureWhitelistAccess(surveyId: number) {
+    const whitelist = await this.prisma.surveyWhitelist.findUnique({
+      where: { surveyId },
+      include: { members: true },
+    });
+    if (!whitelist || !whitelist.enabled) return;
+
+    await this.ensureMockWecomUser();
+    const contact = await this.prisma.contact.findUnique({ where: { name: mockUser.name } });
+    if (!contact) throw new ForbiddenException('该问卷暂未开放');
+
+    const allowed = whitelist.members.some((member) => member.contactId === contact.id);
+    if (!allowed) throw new ForbiddenException('该问卷暂未开放');
+  }
+
+  private uniqueIds(ids: number[]) {
+    return Array.from(new Set(ids.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
+  }
+
+  private async assertContactsExist(contactIds: number[]) {
+    if (contactIds.length === 0) return;
+    const count = await this.prisma.contact.count({ where: { id: { in: contactIds } } });
+    if (count !== contactIds.length) throw new BadRequestException('白名单成员中包含不存在的联系人');
   }
 }

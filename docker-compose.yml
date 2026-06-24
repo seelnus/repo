@@ -1,6 +1,7 @@
 services:
   mysql:
     image: mysql:8.0
+    restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: root_password
       MYSQL_DATABASE: survey_app
@@ -18,6 +19,7 @@ services:
 
   minio:
     image: minio/minio:latest
+    restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -29,32 +31,44 @@ services:
       - minio-data:/data
 
   app-backend:
-    build:
-      context: ./backend
+    image: node:20-alpine
+    restart: unless-stopped
+    working_dir: /app
+    command: sh -c "if [ ! -d node_modules/.bin ]; then npm ci --no-audit --no-fund; fi && npm run prisma:generate && npm run prisma:deploy && npm run seed && npm run start:dev"
     env_file:
       - .env
     environment:
       DATABASE_URL: "mysql://survey:survey_password@mysql:3306/survey_app"
-      FRONTEND_ORIGIN: "http://localhost:8080"
+      FRONTEND_ORIGIN: "http://localhost:5174"
+      PORT: "3100"
     ports:
-      - "3000:3000"
+      - "3100:3100"
     volumes:
+      - ./backend:/app
+      - backend-node-modules:/app/node_modules
       - backend-uploads:/app/uploads
     depends_on:
       mysql:
         condition: service_healthy
 
   app-frontend:
-    build:
-      context: ./frontend
-      args:
-        VITE_API_BASE: "http://localhost:3000/api"
+    image: node:20-alpine
+    restart: unless-stopped
+    working_dir: /app
+    command: sh -c "if [ ! -d node_modules/.bin ]; then npm ci --no-audit --no-fund; fi && npm run dev -- --host 0.0.0.0 --port 5174"
+    environment:
+      VITE_API_BASE: "http://localhost:3100/api"
     ports:
-      - "8080:80"
+      - "5174:5174"
+    volumes:
+      - ./frontend:/app
+      - frontend-node-modules:/app/node_modules
     depends_on:
       - app-backend
 
 volumes:
   mysql-data:
   minio-data:
+  backend-node-modules:
+  frontend-node-modules:
   backend-uploads:
