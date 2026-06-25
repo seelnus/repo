@@ -212,7 +212,7 @@ function LoginPage() {
       {/* 左侧品牌面板 */}
       <div className="login-left">
         <div className="login-brand">
-          <div className="login-brand-icon">📋</div>
+          <img src="/chuanghuo.png" alt="闯货" className="login-brand-icon" />
           <div className="login-brand-name">内部问卷系统</div>
           <div className="login-brand-sub">高效的企业内部调研与考核平台</div>
         </div>
@@ -225,11 +225,8 @@ function LoginPage() {
       {/* 右侧表单区 */}
       <div className="login-right">
         <div className="login-card">
-          <Typography.Title level={3} style={{ margin: '0 0 4px', color: 'var(--text-primary)' }}>欢迎登录</Typography.Title>
-          <Typography.Paragraph type="secondary" style={{ margin: '0 0 28px', fontSize: 13 }}>
-            默认账号：13800000000 / admin123456
-          </Typography.Paragraph>
-          <Form layout="vertical" onFinish={onFinish} initialValues={{ phone: '13800000000', password: 'admin123456' }}>
+          <Typography.Title level={3} style={{ margin: '0 0 28px', color: 'var(--text-primary)' }}>欢迎登录</Typography.Title>
+          <Form layout="vertical" onFinish={onFinish}>
             <Form.Item name="phone" label="手机号" rules={[{ required: true, message: '请输入手机号' }]}>
               <Input size="large" placeholder="请输入手机号" />
             </Form.Item>

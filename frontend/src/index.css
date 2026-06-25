@@ -60,8 +60,12 @@ a {
 }
 
 .login-brand-icon {
-  font-size: 40px;
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  object-fit: cover;
   margin-bottom: 16px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
 }
 
 .login-brand-name {
