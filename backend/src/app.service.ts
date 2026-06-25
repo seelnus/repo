@@ -14,11 +14,12 @@ import { randomBytes } from 'crypto';
 import { PrismaService } from './prisma.service';
 import { SurveyQuestion, SurveySchema, emptySurveySchema } from './app.types';
 
-const mockUser = {
-  wecomUserid: 'mock-user-001',
-  name: '测试员工',
-  department: '测试部门',
-};
+interface FillUser {
+  sub: number;
+  wecomUserid: string;
+  name: string;
+  type: 'fill';
+}
 
 @Injectable()
 export class AppService {
@@ -327,22 +328,80 @@ export class AppService {
     return { ok: true };
   }
 
-  async getPublicSurvey(shareToken: string) {
+  // ── 企微 OAuth ──
+
+  async getWecomOAuthUrl(state: string): Promise<string> {
+    const corpId = process.env.WECOM_CORP_ID || '';
+    const agentId = process.env.WECOM_AGENT_ID || '';
+    const base = process.env.FRONTEND_ORIGIN?.replace(/\/$/, '') || 'https://hr.mmcb.top';
+    const redirectUri = encodeURIComponent(`${base}/api/wecom/oauth/callback`);
+    const encodedState = encodeURIComponent(state);
+    return `https://login.work.weixin.qq.com/wwlogin/sso/login?login_type=ServiceApp&appid=${corpId}&agentid=${agentId}&redirect_uri=${redirectUri}&state=${encodedState}`;
+  }
+
+  async handleWecomCallback(code: string): Promise<{ token: string; name: string }> {
+    const corpId = process.env.WECOM_CORP_ID || '';
+    const secret = process.env.WECOM_APP_SECRET || '';
+
+    // 1. 获取 access_token
+    const tokenRes = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${corpId}&corpsecret=${secret}`);
+    const tokenData: any = await tokenRes.json();
+    if (tokenData.errcode !== 0) throw new UnauthorizedException(`企微授权失败: ${tokenData.errmsg}`);
+    const accessToken: string = tokenData.access_token;
+
+    // 2. 用 code 换取企微 userid
+    const userInfoRes = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/auth/getuserinfo?access_token=${accessToken}&code=${code}`);
+    const userInfoData: any = await userInfoRes.json();
+    if (userInfoData.errcode !== 0) throw new UnauthorizedException(`获取用户信息失败: ${userInfoData.errmsg}`);
+    const wecomUserid: string = userInfoData.UserId || userInfoData.userid || '';
+    if (!wecomUserid) throw new UnauthorizedException('未获取到企微用户ID');
+
+    // 3. 获取用户详情（姓名、手机号）
+    const userRes = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/user/get?access_token=${accessToken}&userid=${wecomUserid}`);
+    const userData: any = await userRes.json();
+    const name: string = userData.name || '';
+    const mobile: string = userData.mobile || '';
+
+    // 4. 同步 WecomUser 记录
+    const deptId = Array.isArray(userData.department) && userData.department.length > 0
+      ? String(userData.department[0]) : null;
+    await this.prisma.wecomUser.upsert({
+      where: { wecomUserid },
+      create: { wecomUserid, name, department: deptId },
+      update: { name, department: deptId },
+    });
+
+    // 5. 匹配联系人（手机号优先，姓名兜底）
+    const orConditions: any[] = [];
+    if (mobile) orConditions.push({ phone: mobile });
+    if (name) orConditions.push({ name });
+    if (orConditions.length === 0) throw new ForbiddenException('您不在系统联系人名单中');
+
+    const contact = await this.prisma.contact.findFirst({ where: { OR: orConditions } });
+    if (!contact) throw new ForbiddenException('您不在系统联系人名单中，请联系管理员');
+
+    // 6. 签发填写端 JWT（24h 有效）
+    const token = this.jwt.sign(
+      { sub: contact.id, wecomUserid, name: contact.name, type: 'fill' },
+      { expiresIn: '24h' },
+    );
+    return { token, name: contact.name };
+  }
+
+  // ── 公开问卷 ──
+
+  async getPublicSurvey(shareToken: string, fillUser: FillUser) {
     const survey = await this.prisma.survey.findUnique({ where: { shareToken } });
     if (!survey || survey.isDeleted) throw new NotFoundException('问卷不存在或已下线');
     if (survey.status !== SurveyStatus.published) throw new ForbiddenException('该问卷暂未开放');
-    await this.ensureWhitelistAccess(survey.id);
+    await this.ensureWhitelistAccess(survey.id, fillUser);
 
-    if (survey.type === SurveyType.promotional_document) {
-      return { ...survey, currentUser: mockUser, alreadySubmitted: false };
-    }
-
-    await this.ensureMockWecomUser();
-    return { ...survey, currentUser: mockUser, alreadySubmitted: false };
+    const currentUser = { wecomUserid: fillUser.wecomUserid, name: fillUser.name };
+    return { ...survey, currentUser, alreadySubmitted: false };
   }
 
-  async submitSurvey(shareToken: string, answersJson: Record<string, unknown>) {
-    const survey = await this.getPublicSurvey(shareToken);
+  async submitSurvey(shareToken: string, answersJson: Record<string, unknown>, fillUser: FillUser) {
+    const survey = await this.getPublicSurvey(shareToken, fillUser);
     if (survey.type === SurveyType.promotional_document) {
       throw new BadRequestException('宣传文档类不支持提交答卷');
     }
@@ -350,7 +409,7 @@ export class AppService {
     return this.prisma.surveyResponse.create({
       data: {
         surveyId: survey.id,
-        wecomUserid: mockUser.wecomUserid,
+        wecomUserid: fillUser.wecomUserid,
         answersJson: answersJson as Prisma.InputJsonValue,
       },
     });
@@ -509,26 +568,14 @@ export class AppService {
     };
   }
 
-  private async ensureMockWecomUser() {
-    await this.prisma.wecomUser.upsert({
-      where: { wecomUserid: mockUser.wecomUserid },
-      create: mockUser,
-      update: { name: mockUser.name, department: mockUser.department },
-    });
-  }
-
-  private async ensureWhitelistAccess(surveyId: number) {
+  private async ensureWhitelistAccess(surveyId: number, fillUser: FillUser) {
     const whitelist = await this.prisma.surveyWhitelist.findUnique({
       where: { surveyId },
       include: { members: true },
     });
     if (!whitelist || !whitelist.enabled) return;
 
-    await this.ensureMockWecomUser();
-    const contact = await this.prisma.contact.findUnique({ where: { name: mockUser.name } });
-    if (!contact) throw new ForbiddenException('该问卷暂未开放');
-
-    const allowed = whitelist.members.some((member) => member.contactId === contact.id);
+    const allowed = whitelist.members.some((member) => member.contactId === fillUser.sub);
     if (!allowed) throw new ForbiddenException('该问卷暂未开放');
   }
 

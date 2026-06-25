@@ -124,6 +124,14 @@ http.interceptors.request.use((config) => {
   return config;
 });
 
+// 填写端专用 axios 实例（携带 fill_token）
+const fillHttp = axios.create({ baseURL: API });
+fillHttp.interceptors.request.use((config) => {
+  const token = localStorage.getItem('fill_token');
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
 http.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -1957,12 +1965,51 @@ function FillPage() {
   const [error, setError] = useState<string>();
   const [answers, setAnswers] = useState<Record<string, any>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [authChecking, setAuthChecking] = useState(true);
 
   useEffect(() => {
-    http
+    // 1. 从 URL 提取 fill_token / auth_error（OAuth 回调带回来的）
+    const params = new URLSearchParams(window.location.search);
+    const newToken = params.get('fill_token');
+    const authError = params.get('auth_error');
+
+    if (newToken) {
+      localStorage.setItem('fill_token', newToken);
+      // 清除 URL 中的 token 参数
+      params.delete('fill_token');
+      const clean = params.toString() ? `?${params.toString()}` : '';
+      window.history.replaceState({}, '', `${window.location.pathname}${clean}`);
+    }
+
+    if (authError) {
+      setError(decodeURIComponent(authError));
+      setAuthChecking(false);
+      return;
+    }
+
+    // 2. 检查 fill_token
+    const token = localStorage.getItem('fill_token');
+    if (!token) {
+      // 无 token → 跳转企微授权
+      const state = encodeURIComponent(`/s/${shareToken}`);
+      window.location.href = `${API.replace('/api', '')}/api/wecom/oauth/url?state=/s/${shareToken}`;
+      return;
+    }
+
+    // 3. 加载问卷
+    setAuthChecking(false);
+    fillHttp
       .get(`/survey/${shareToken}`)
       .then(({ data }) => setSurvey(data))
-      .catch((err) => setError(err.response?.data?.message || '问卷不存在或已下线'));
+      .catch((err) => {
+        if (err.response?.status === 401) {
+          // token 过期，清除后重新授权
+          localStorage.removeItem('fill_token');
+          window.location.href = `${API.replace('/api', '')}/api/wecom/oauth/url?state=/s/${shareToken}`;
+        } else {
+          setError(err.response?.data?.message || '问卷不存在或已下线');
+        }
+      });
   }, [shareToken]);
 
   const visibleQuestions = useMemo(
@@ -1970,6 +2017,7 @@ function FillPage() {
     [survey, answers],
   );
 
+  if (authChecking) return <div className="fill-page"><Card loading style={{ margin: 'auto', marginTop: 80, maxWidth: 400 }} /></div>;
   if (error) return <Result status="warning" title={error} />;
   if (!survey) return <div className="fill-page"><Card loading /></div>;
 
@@ -1989,7 +2037,7 @@ function FillPage() {
 
     setSubmitting(true);
     try {
-      await http.post(`/survey/${shareToken}/submit`, { answers });
+      await fillHttp.post(`/survey/${shareToken}/submit`, { answers });
       navigate('/success');
     } catch (err: any) {
       message.error(err.response?.data?.message || '提交失败');

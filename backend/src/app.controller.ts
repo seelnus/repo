@@ -5,6 +5,7 @@ import { diskStorage } from 'multer';
 import { extname } from 'path';
 import type { Response } from 'express';
 import { AdminAuthGuard } from './admin-auth.guard';
+import { FillAuthGuard } from './fill-auth.guard';
 import { AppService } from './app.service';
 
 @Controller('api')
@@ -188,22 +189,34 @@ export class AppController {
   }
 
   @Get('wecom/oauth/url')
-  wecomUrl() {
-    return { mode: 'mock', url: '' };
+  async wecomUrl(@Query('state') state: string, @Res() res: Response) {
+    const url = await this.app.getWecomOAuthUrl(state || '/');
+    res.redirect(302, url);
   }
 
   @Get('wecom/oauth/callback')
-  wecomCallback() {
-    return { mode: 'mock', message: '开发环境使用模拟企微身份' };
+  async wecomCallback(@Query('code') code: string, @Query('state') state: string, @Res() res: Response) {
+    const backTo = state || '/';
+    const base = process.env.FRONTEND_ORIGIN?.replace(/\/$/, '') || 'https://hr.mmcb.top';
+    try {
+      const { token } = await this.app.handleWecomCallback(code);
+      const sep = backTo.includes('?') ? '&' : '?';
+      res.redirect(302, `${base}${backTo}${sep}fill_token=${token}`);
+    } catch (err: any) {
+      const sep = backTo.includes('?') ? '&' : '?';
+      res.redirect(302, `${base}${backTo}${sep}auth_error=${encodeURIComponent(err.message || '授权失败')}`);
+    }
   }
 
+  @UseGuards(FillAuthGuard)
   @Get('survey/:shareToken')
-  getPublicSurvey(@Param('shareToken') shareToken: string) {
-    return this.app.getPublicSurvey(shareToken);
+  getPublicSurvey(@Param('shareToken') shareToken: string, @Req() req: any) {
+    return this.app.getPublicSurvey(shareToken, req.fillUser);
   }
 
+  @UseGuards(FillAuthGuard)
   @Post('survey/:shareToken/submit')
-  submitSurvey(@Param('shareToken') shareToken: string, @Body('answers') answers: Record<string, unknown>) {
-    return this.app.submitSurvey(shareToken, answers || {});
+  submitSurvey(@Param('shareToken') shareToken: string, @Body('answers') answers: Record<string, unknown>, @Req() req: any) {
+    return this.app.submitSurvey(shareToken, answers || {}, req.fillUser);
   }
 }

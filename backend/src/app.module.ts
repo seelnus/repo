@@ -4,6 +4,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AdminAuthGuard } from './admin-auth.guard';
+import { FillAuthGuard } from './fill-auth.guard';
 import { PrismaService } from './prisma.service';
 
 @Module({
@@ -16,6 +17,6 @@ import { PrismaService } from './prisma.service';
     }),
   ],
   controllers: [AppController],
-  providers: [AppService, PrismaService, AdminAuthGuard],
+  providers: [AppService, PrismaService, AdminAuthGuard, FillAuthGuard],
 })
 export class AppModule {}
