@@ -991,11 +991,12 @@ function QuestionEditor({
           </Form.Item>
         ) : (
           <>
-            <Input
+            <Input.TextArea
               variant="borderless"
               className="question-desc-input"
               value={question.description}
               placeholder="请输入题目说明（选填）"
+              autoSize={{ minRows: 1, maxRows: 8 }}
               onChange={(event) => onChange({ ...question, description: event.target.value })}
             />
           </>
