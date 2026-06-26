@@ -8,6 +8,7 @@ import {
   EyeOutlined,
   FileTextOutlined,
   FormOutlined,
+  HolderOutlined,
   InboxOutlined,
   LinkOutlined,
   TableOutlined,
@@ -16,6 +17,21 @@ import {
   StarOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+  arrayMove,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import {
   Alert,
   App as AntApp,
@@ -512,6 +528,19 @@ function SurveyEditor() {
   const [saving, setSaving] = useState(false);
   const activeQuestionType = questions.find((item) => item.id === activeId)?.type;
 
+  const dndSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (over && active.id !== over.id) {
+      setQuestions((prev) => {
+        const oldIndex = prev.findIndex((q) => q.id === active.id);
+        const newIndex = prev.findIndex((q) => q.id === over.id);
+        return arrayMove(prev, oldIndex, newIndex);
+      });
+    }
+  }
+
   useEffect(() => {
     if (!id) return;
     http.get(`/admin/surveys/${id}`).then(({ data }: { data: Survey }) => {
@@ -689,23 +718,25 @@ function SurveyEditor() {
                   <Typography.Text type="secondary">支持单选、多选、评分、文本、附件和日期题。</Typography.Text>
                 </div>
               ) : (
-                questions.map((question, index) => (
-                  <QuestionEditor
-                    key={question.id}
-                    active={activeId === question.id}
-                    question={question}
-                    questions={questions}
-                    onActivate={() => setActiveId(question.id)}
-                    onChange={(next) => setQuestions((prev) => prev.map((item) => (item.id === question.id ? next : item)))}
-                    onDelete={() => {
-                      setQuestions((prev) => prev.filter((item) => item.id !== question.id));
-                      if (activeId === question.id) {
-                        setActiveId(undefined);
-                      }
-                    }}
-                    index={index}
-                  />
-                ))
+                <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                  <SortableContext items={questions.map((q) => q.id)} strategy={verticalListSortingStrategy}>
+                    {questions.map((question, index) => (
+                      <SortableQuestionEditor
+                        key={question.id}
+                        active={activeId === question.id}
+                        question={question}
+                        questions={questions}
+                        onActivate={() => setActiveId(question.id)}
+                        onChange={(next) => setQuestions((prev) => prev.map((item) => (item.id === question.id ? next : item)))}
+                        onDelete={() => {
+                          setQuestions((prev) => prev.filter((item) => item.id !== question.id));
+                          if (activeId === question.id) setActiveId(undefined);
+                        }}
+                        index={index}
+                      />
+                    ))}
+                  </SortableContext>
+                </DndContext>
               )}
             </div>
           )}
@@ -904,6 +935,24 @@ function RichTextSurveyEditor({ value, onChange }: { value: string; onChange: (v
         <Typography.Title level={5}>预览</Typography.Title>
         <div className="rich-preview-body" dangerouslySetInnerHTML={{ __html: value || '<p style="color:#999">这里会显示文档预览</p>' }} />
       </div>
+    </div>
+  );
+}
+
+function SortableQuestionEditor(props: Parameters<typeof QuestionEditor>[0]) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: props.question.id });
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    position: 'relative',
+  };
+  return (
+    <div ref={setNodeRef} style={style}>
+      <span className="drag-handle" {...attributes} {...listeners} title="拖拽排序">
+        <HolderOutlined />
+      </span>
+      <QuestionEditor {...props} />
     </div>
   );
 }

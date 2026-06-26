@@ -554,11 +554,35 @@ a {
   margin-bottom: 16px;
 }
 
+.drag-handle {
+  position: absolute;
+  left: -24px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #bbb;
+  cursor: grab;
+  font-size: 16px;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+[style*="position: relative"]:hover > .drag-handle {
+  opacity: 1;
+}
+
 .question-canvas {
   background: #fff;
   border: 1px solid #e8ecf2;
   border-radius: 8px;
   padding: 18px;
+  padding-left: 32px;
   min-height: 420px;
 }
 
