@@ -499,6 +499,7 @@ export class AppService {
         maxSizeMB: question.type === 'file' ? 20 : question.maxSizeMB,
         accept: question.type === 'file' ? ['.jpg', '.png', '.pdf', '.doc', '.docx', '.xlsx'] : question.accept,
         visibleWhen: question.visibleWhen,
+        hasOther: ['radio', 'checkbox'].includes(question.type) ? Boolean(question.hasOther) : undefined,
       })),
       contentHtml: '',
     };
