@@ -144,6 +144,15 @@ export class AppService {
         title: query.keyword ? { contains: query.keyword } : undefined,
         type: query.type || undefined,
       },
+      select: {
+        id: true,
+        title: true,
+        type: true,
+        status: true,
+        shareToken: true,
+        createdAt: true,
+        createdBy: true,
+      },
       orderBy: { createdAt: 'desc' },
     });
   }

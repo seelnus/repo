@@ -2,6 +2,7 @@ services:
   mysql:
     image: mysql:8.0
     restart: unless-stopped
+    command: --sort_buffer_size=8M --max_allowed_packet=64M
     environment:
       MYSQL_ROOT_PASSWORD: root_password
       MYSQL_DATABASE: survey_app
