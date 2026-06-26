@@ -7,6 +7,7 @@ export type SurveyQuestion = {
   description?: string;
   required?: boolean;
   options?: string[];
+  hasOther?: boolean;
   maxScore?: number;
   maxSizeMB?: number;
   accept?: string[];
