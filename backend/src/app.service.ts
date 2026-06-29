@@ -342,8 +342,7 @@ export class AppService {
   async getWecomOAuthUrl(state: string): Promise<string> {
     const corpId = process.env.WECOM_CORP_ID || '';
     const agentId = process.env.WECOM_AGENT_ID || '';
-    const base = process.env.FRONTEND_ORIGIN?.replace(/\/$/, '') || 'https://hr.mmcb.top';
-    const redirectUri = encodeURIComponent(`${base}/api/wecom/oauth/callback`);
+    const redirectUri = encodeURIComponent(process.env.WECOM_CALLBACK_URL || 'https://hr.mmcb.top/api/wecom/oauth/callback');
     const encodedState = encodeURIComponent(state);
     return `https://login.work.weixin.qq.com/wwlogin/sso/login?login_type=CorpApp&appid=${corpId}&agentid=${agentId}&redirect_uri=${redirectUri}&state=${encodedState}`;
   }
