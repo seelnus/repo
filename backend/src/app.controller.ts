@@ -197,7 +197,7 @@ export class AppController {
   @Get('wecom/oauth/callback')
   async wecomCallback(@Query('code') code: string, @Query('state') state: string, @Res() res: Response) {
     const backTo = state || '/';
-    const base = process.env.FRONTEND_ORIGIN?.replace(/\/$/, '') || 'https://hr.mmcb.top';
+    const base = (process.env.WECOM_CALLBACK_URL?.replace(/\/api\/wecom\/oauth\/callback$/, '') || process.env.FRONTEND_ORIGIN?.replace(/\/$/, '') || 'https://hr.mmcb.top');
     try {
       const { token } = await this.app.handleWecomCallback(code);
       const sep = backTo.includes('?') ? '&' : '?';
