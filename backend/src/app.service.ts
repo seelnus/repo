@@ -423,10 +423,21 @@ export class AppService {
     });
   }
 
-  async listResponses(surveyId: number) {
+  async listResponses(surveyId: number, startDate?: Date, endDate?: Date) {
     await this.getAdminSurvey(surveyId);
+    const dateFilter: any = {};
+    if (startDate) dateFilter.gte = startDate;
+    if (endDate) {
+      // endDate 取当天结束（23:59:59.999）
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      dateFilter.lte = end;
+    }
     const responses = await this.prisma.surveyResponse.findMany({
-      where: { surveyId },
+      where: {
+        surveyId,
+        ...(Object.keys(dateFilter).length > 0 ? { submittedAt: dateFilter } : {}),
+      },
       include: { comment: true },
       orderBy: { submittedAt: 'desc' },
     });
@@ -451,7 +462,7 @@ export class AppService {
     });
   }
 
-  async exportSurvey(surveyId: number) {
+  async exportSurvey(surveyId: number, startDate?: Date, endDate?: Date) {
     const survey = await this.getAdminSurvey(surveyId);
 
     if (survey.type === SurveyType.promotional_document) {
@@ -461,7 +472,7 @@ export class AppService {
       );
     }
 
-    const responses = await this.listResponses(surveyId);
+    const responses = await this.listResponses(surveyId, startDate, endDate);
     const contacts = await this.prisma.contact.findMany();
     const contactMap = new Map(contacts.map((item) => [item.name, item]));
     const questions = ((survey.schemaJson as SurveySchema).questions || []) as SurveyQuestion[];

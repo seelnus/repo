@@ -39,6 +39,7 @@ import {
   Card,
   Checkbox,
   ConfigProvider,
+  DatePicker,
   Drawer,
   Empty,
   Form,
@@ -60,6 +61,7 @@ import {
   Upload,
   Steps,
 } from 'antd';
+import dayjs from 'dayjs';
 import zhCN from 'antd/locale/zh_CN';
 import type { UploadProps } from 'antd';
 import axios from 'axios';
@@ -340,6 +342,9 @@ function SurveyList() {
   const [data, setData] = useState<Survey[]>([]);
   const [keyword, setKeyword] = useState('');
   const [type, setType] = useState<SurveyKind | undefined>();
+  const [exportModal, setExportModal] = useState<{ open: boolean; surveyId: number | null; surveyTitle: string }>({ open: false, surveyId: null, surveyTitle: '' });
+  const [exportRange, setExportRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   async function load(filters?: { keyword?: string; type?: SurveyKind }) {
     const nextKeyword = filters?.keyword ?? keyword;
@@ -356,6 +361,23 @@ function SurveyList() {
     await http.put(`/admin/surveys/${survey.id}/status`, { status: checked ? 'published' : 'disabled' });
     message.success('状态已更新');
     load();
+  }
+
+  async function handleExportConfirm() {
+    if (!exportModal.surveyId) return;
+    setExporting(true);
+    try {
+      const params: Record<string, string> = {};
+      if (exportRange?.[0]) params.startDate = exportRange[0].format('YYYY-MM-DD');
+      if (exportRange?.[1]) params.endDate = exportRange[1].format('YYYY-MM-DD');
+      const query = new URLSearchParams(params).toString();
+      const path = `/admin/surveys/${exportModal.surveyId}/export${query ? `?${query}` : ''}`;
+      await downloadFile(path, `survey-${exportModal.surveyId}.csv`);
+      setExportModal({ open: false, surveyId: null, surveyTitle: '' });
+      setExportRange(null);
+    } finally {
+      setExporting(false);
+    }
   }
 
   const thisMonth = new Date().toISOString().slice(0, 7);
@@ -497,7 +519,7 @@ function SurveyList() {
                   <Button icon={<EyeOutlined />} onClick={() => navigate(`/surveys/${row.id}/responses`)}>
                     数据
                   </Button>
-                  <Button icon={<DownloadOutlined />} onClick={() => downloadFile(`/admin/surveys/${row.id}/export`, `survey-${row.id}.csv`)}>
+                  <Button icon={<DownloadOutlined />} onClick={() => { setExportRange(null); setExportModal({ open: true, surveyId: row.id, surveyTitle: row.title }); }}>
                     导出 CSV
                   </Button>
                   <Popconfirm title="确认删除该问卷？" cancelText="No" onConfirm={async () => { await http.delete(`/admin/surveys/${row.id}`); load(); }}>
@@ -511,6 +533,27 @@ function SurveyList() {
           ]}
         />
       </Card>
+
+      <Modal
+        title={`导出 CSV — ${exportModal.surveyTitle}`}
+        open={exportModal.open}
+        onCancel={() => { setExportModal({ open: false, surveyId: null, surveyTitle: '' }); setExportRange(null); }}
+        onOk={handleExportConfirm}
+        okText="导出"
+        cancelText="取消"
+        confirmLoading={exporting}
+      >
+        <div style={{ marginBottom: 8, color: '#666', fontSize: 13 }}>
+          选择填写时间范围（不选则导出全部数据）
+        </div>
+        <DatePicker.RangePicker
+          style={{ width: '100%' }}
+          value={exportRange}
+          onChange={(val) => setExportRange(val as [dayjs.Dayjs | null, dayjs.Dayjs | null] | null)}
+          allowEmpty={[true, true]}
+          placeholder={['开始日期', '结束日期']}
+        />
+      </Modal>
     </>
   );
 }

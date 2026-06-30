@@ -128,8 +128,15 @@ export class AppController {
   @UseGuards(AdminAuthGuard)
   @Get('admin/surveys/:id/export')
   @Header('Content-Type', 'text/csv; charset=utf-8')
-  async exportSurvey(@Param('id', ParseIntPipe) id: number, @Res() res: Response) {
-    res.attachment(`survey-${id}.csv`).send(await this.app.exportSurvey(id));
+  async exportSurvey(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('startDate') startDate: string | undefined,
+    @Query('endDate') endDate: string | undefined,
+    @Res() res: Response,
+  ) {
+    const start = startDate ? new Date(startDate) : undefined;
+    const end = endDate ? new Date(endDate) : undefined;
+    res.attachment(`survey-${id}.csv`).send(await this.app.exportSurvey(id, start, end));
   }
 
   @UseGuards(AdminAuthGuard)
