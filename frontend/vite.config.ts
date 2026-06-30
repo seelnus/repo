@@ -5,5 +5,10 @@ export default defineConfig({
   plugins: [react()],
   server: {
     allowedHosts: ['hr.mmcb.top'],
+    hmr: {
+      host: 'hr.mmcb.top',
+      protocol: 'wss',
+      clientPort: 443,
+    },
   },
 })
