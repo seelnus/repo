@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>360 环评功能 · 页面原型</title>
+<style>
+  :root{
+    --primary:#1677ff; --primary-bg:#e6f4ff; --border:#f0f0f0; --border2:#d9d9d9;
+    --text:#000000d9; --text2:#00000073; --bg:#f5f5f5; --ok:#52c41a; --warn:#faad14; --err:#ff4d4f;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.6}
+  .app{display:flex;min-height:100vh}
+  /* sidebar */
+  .sider{width:230px;background:#001529;color:#fff;flex-shrink:0;position:sticky;top:0;height:100vh;overflow:auto}
+  .logo{height:56px;display:flex;align-items:center;padding:0 20px;color:#fff;font-weight:600;font-size:15px;border-bottom:1px solid #ffffff1a}
+  .logo span{color:var(--primary);margin-right:8px}
+  .menu-group{padding:12px 20px 4px;color:#ffffff66;font-size:12px}
+  .menu a{display:block;padding:11px 20px 11px 32px;color:#ffffffa6;text-decoration:none;cursor:pointer;font-size:14px}
+  .menu a:hover{color:#fff;background:#ffffff14}
+  .menu a.active{color:#fff;background:var(--primary)}
+  /* main */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0}
+  .topbar{height:56px;background:#fff;border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 24px;justify-content:space-between}
+  .crumb{color:var(--text2);font-size:14px}
+  .crumb b{color:var(--text)}
+  .content{padding:24px;flex:1}
+  .page{display:none}
+  .page.show{display:block}
+  /* cards */
+  .card{background:#fff;border-radius:8px;padding:20px 24px;margin-bottom:16px;box-shadow:0 1px 2px #00000008}
+  .card h3{font-size:16px;margin-bottom:4px}
+  .card .sub{color:var(--text2);font-size:13px;margin-bottom:16px}
+  .row{display:flex;gap:16px;flex-wrap:wrap}
+  /* buttons */
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:5px 16px;border-radius:6px;border:1px solid var(--border2);background:#fff;color:var(--text);cursor:pointer;font-size:14px}
+  .btn.primary{background:var(--primary);color:#fff;border-color:var(--primary)}
+  .btn.sm{padding:2px 10px;font-size:13px}
+  .btn.link{border:none;background:none;color:var(--primary);padding:2px 6px}
+  .toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+  .toolbar .left{display:flex;gap:10px;align-items:center}
+  /* table */
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th{text-align:left;background:#fafafa;color:var(--text);font-weight:600;padding:12px 12px;border-bottom:1px solid var(--border)}
+  td{padding:12px 12px;border-bottom:1px solid var(--border)}
+  tr:hover td{background:#fafafa}
+  /* tags */
+  .tag{display:inline-block;padding:1px 8px;border-radius:4px;font-size:12px;line-height:20px}
+  .tag.blue{background:var(--primary-bg);color:var(--primary);border:1px solid #91caff}
+  .tag.green{background:#f6ffed;color:#389e0d;border:1px solid #b7eb8f}
+  .tag.gold{background:#fffbe6;color:#d48806;border:1px solid #ffe58f}
+  .tag.red{background:#fff2f0;color:#cf1322;border:1px solid #ffccc7}
+  .tag.gray{background:#fafafa;color:var(--text2);border:1px solid var(--border2)}
+  .dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:6px;vertical-align:middle}
+  /* stat */
+  .stats{display:flex;gap:16px;margin-bottom:16px}
+  .stat{flex:1;background:#fff;border-radius:8px;padding:18px 20px;box-shadow:0 1px 2px #00000008}
+  .stat .n{font-size:28px;font-weight:600}
+  .stat .l{color:var(--text2);font-size:13px}
+  .stat.err .n{color:var(--err)} .stat.ok .n{color:var(--ok)} .stat.warn .n{color:var(--warn)}
+  /* form */
+  .field{margin-bottom:18px;max-width:560px}
+  .field label{display:block;margin-bottom:6px;font-weight:500}
+  .field .ctrl{display:flex;align-items:center;border:1px solid var(--border2);border-radius:6px;padding:6px 11px;background:#fff;color:var(--text2)}
+  .field select,.field input{width:100%;border:none;outline:none;font-size:14px;color:var(--text);background:none}
+  .req{color:var(--err);margin-right:3px}
+  .hint{color:var(--text2);font-size:12px;margin-top:4px}
+  /* filters */
+  .filters{display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+  .chip{padding:4px 12px;border:1px solid var(--border2);border-radius:16px;background:#fff;cursor:pointer;font-size:13px}
+  .chip.active{border-color:var(--primary);color:var(--primary);background:var(--primary-bg)}
+  /* alert */
+  .alert{border-radius:8px;padding:12px 16px;margin-bottom:14px;font-size:14px;display:flex;gap:10px;align-items:flex-start}
+  .alert.warn{background:#fffbe6;border:1px solid #ffe58f}
+  .alert.err{background:#fff2f0;border:1px solid #ffccc7}
+  .alert.info{background:var(--primary-bg);border:1px solid #91caff}
+  /* employee mobile */
+  .phone{width:380px;margin:0 auto;background:#fff;border-radius:18px;box-shadow:0 8px 30px #0000001f;overflow:hidden;border:1px solid var(--border)}
+  .phone-head{background:linear-gradient(135deg,#1677ff,#4096ff);color:#fff;padding:20px}
+  .phone-head h2{font-size:18px}
+  .phone-head p{opacity:.85;font-size:13px;margin-top:4px}
+  .progress{height:6px;background:#ffffff40;border-radius:4px;margin-top:14px;overflow:hidden}
+  .progress i{display:block;height:100%;width:60%;background:#fff;border-radius:4px}
+  .task{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border)}
+  .task .ic{width:34px;height:34px;border-radius:8px;background:var(--primary-bg);color:var(--primary);display:flex;align-items:center;justify-content:center;font-weight:600;margin-right:12px}
+  .task .meta{flex:1}
+  .task .meta .t{font-weight:500}
+  .task .meta .d{color:var(--text2);font-size:12px}
+  .muted{color:var(--text2)}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--text2)}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sider">
+    <div class="logo"><span>◆</span> 内部问卷系统</div>
+    <div class="menu-group">问卷</div>
+    <div class="menu">
+      <a>问卷管理</a>
+      <a>联系人管理</a>
+      <a>白名单管理</a>
+    </div>
+    <div class="menu-group">360 环评</div>
+    <div class="menu" id="nav">
+      <a data-p="cycles" class="active">评价批次</a>
+      <a data-p="config">批次配置</a>
+      <a data-p="leader">领导白名单</a>
+      <a data-p="generate">生成关系 / 异常</a>
+      <a data-p="review">复核列表 ★</a>
+      <a data-p="employee">员工填写端</a>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div class="crumb" id="crumb">360 环评 / <b>评价批次</b></div>
+      <div class="muted">原型演示 · 非真实数据</div>
+    </div>
+    <div class="content">
+
+      <!-- 1. 评价批次列表 -->
+      <section class="page show" data-page="cycles">
+        <div class="toolbar">
+          <div class="left"><h3 style="font-size:18px">评价批次</h3></div>
+          <button class="btn primary">+ 新建批次</button>
+        </div>
+        <div class="card" style="padding:0">
+          <table>
+            <thead><tr><th>批次名称</th><th>参评范围</th><th>参评人数</th><th>关系数</th><th>配置完整度</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><b>2026 Q2 技术部 360 环评</b></td><td>技术组</td><td>12</td><td>156</td>
+                <td><span class="tag gold">10/12 完整</span></td>
+                <td><span class="dot" style="background:var(--warn)"></span>生成完成·待复核</td>
+                <td><a class="btn link" data-p="review">复核</a> <a class="btn link" data-p="config">配置</a></td>
+              </tr>
+              <tr>
+                <td><b>2026 Q1 产品部 360 环评</b></td><td>产品组</td><td>8</td><td>72</td>
+                <td><span class="tag green">8/8 完整</span></td>
+                <td><span class="dot" style="background:var(--ok)"></span>已发布</td>
+                <td><a class="btn link">数据</a> <a class="btn link">导出</a></td>
+              </tr>
+              <tr>
+                <td><b>2025 年度 管理层互评</b></td><td>自定义人员</td><td>5</td><td>30</td>
+                <td><span class="tag gray">已关闭</span></td>
+                <td><span class="dot" style="background:#bbb"></span>已关闭</td>
+                <td><a class="btn link">数据</a> <a class="btn link">导出</a></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 2. 批次配置 -->
+      <section class="page" data-page="config">
+        <div class="card">
+          <h3>批次基础配置</h3>
+          <div class="sub">绑定参评范围与三类问卷模板，模板直接复用现有问卷</div>
+          <div class="field"><label><span class="req">*</span>批次名称</label>
+            <div class="ctrl"><input value="2026 Q2 技术部 360 环评"></div></div>
+          <div class="field"><label><span class="req">*</span>参评范围（按部门/组）</label>
+            <div class="ctrl"><select><option>技术组</option><option>产品组</option><option>自定义人员…</option></select></div>
+            <div class="hint">依据联系人「部门」字段分组，同部门视为同组互评</div></div>
+          <div class="row">
+            <div class="field" style="flex:1;min-width:240px"><label>自评问卷模板</label>
+              <div class="ctrl"><select><option>【自评】技术岗能力自评问卷</option></select></div></div>
+            <div class="field" style="flex:1;min-width:240px"><label>他评问卷模板</label>
+              <div class="ctrl"><select><option>【他评】同事互评问卷</option></select></div></div>
+            <div class="field" style="flex:1;min-width:240px"><label>领导评价问卷模板</label>
+              <div class="ctrl"><select><option>【领导】管理者评价问卷</option></select></div></div>
+          </div>
+          <button class="btn primary">保存配置</button>
+          <button class="btn">去创建新问卷</button>
+        </div>
+      </section>
+
+      <!-- 3. 领导白名单 -->
+      <section class="page" data-page="leader">
+        <div class="card">
+          <h3>领导白名单</h3>
+          <div class="sub">领导人员从自动互评规则中剔除，关系单独人工配置（仅按人绑定）</div>
+          <div class="alert info">ⓘ 勾选为领导的人员，不会进入普通员工的自动互评网，需在下方为其单独配置「谁评他 / 他评谁」。</div>
+          <div class="toolbar"><div class="left"><input class="btn" style="width:240px" placeholder="🔍 搜索联系人姓名 / 工号"></div>
+            <button class="btn primary">+ 添加领导</button></div>
+          <table>
+            <thead><tr><th>姓名</th><th>部门</th><th>职位</th><th>评价关系配置</th><th>操作</th></tr></thead>
+            <tbody>
+              <tr><td>李四 <span class="tag blue">领导</span></td><td>技术组</td><td>技术经理</td>
+                <td><span class="tag red">⚠ 待配置</span></td><td><a class="btn link" data-p="config">配置关系</a> <a class="btn link">移除</a></td></tr>
+              <tr><td>赵六 <span class="tag blue">领导</span></td><td>技术组</td><td>技术总监</td>
+                <td><span class="tag green">全组11人评 + 评下属8人</span></td><td><a class="btn link">编辑</a> <a class="btn link">移除</a></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 4. 生成关系 / 异常 -->
+      <section class="page" data-page="generate">
+        <div class="card">
+          <h3>一键生成评价关系</h3>
+          <div class="sub">对范围内普通员工按规则生成：自评 1 份 + 对同组每位同事各 1 份他评</div>
+          <button class="btn primary">▶ 生成 / 重新生成</button>
+          <span class="hint" style="margin-left:12px">重新生成仅覆盖「自动」记录，人工配置保留</span>
+        </div>
+        <div class="card">
+          <h3>生成报告</h3>
+          <div class="sub">本次共生成 156 条关系（自评 12 + 他评 144）。以下需人工处理：</div>
+          <div class="alert err">⚠ <b>双漏（1 人）</b>：王五 — 部门字段为空，未归入任何组，既未被自动覆盖也未人工配置。<a class="btn link" data-p="review">去处理</a></div>
+          <div class="alert warn">⚠ <b>单人组（1 人）</b>：孙七 — 所在组仅 1 人，无互评对象。请选择：跨组评 / 豁免他评 / 仅保留自评。<a class="btn link">去处理</a></div>
+          <div class="alert warn">⚠ <b>领导待配（1 人）</b>：李四 — 在领导白名单但尚未配置评价关系。<a class="btn link" data-p="leader">去配置</a></div>
+        </div>
+      </section>
+
+      <!-- 5. 复核列表 -->
+      <section class="page" data-page="review">
+        <div class="stats">
+          <div class="stat"><div class="n">12</div><div class="l">参评总数</div></div>
+          <div class="stat ok"><div class="n">9</div><div class="l">已完整配置</div></div>
+          <div class="stat err"><div class="n">3</div><div class="l">异常待处理</div></div>
+          <div class="stat warn"><div class="n">75%</div><div class="l">填写完成率</div></div>
+        </div>
+        <div class="card">
+          <h3>复核列表（覆盖度看板）</h3>
+          <div class="sub">按被评人维度展开全员，高亮异常态，便于人工兜底复核谁未设置环评</div>
+          <div class="filters">
+            <span class="chip active">仅看异常</span>
+            <span class="chip">全部</span>
+            <span class="chip">未配自评</span>
+            <span class="chip">无人评价</span>
+            <span class="chip">领导待配</span>
+            <span class="chip">未归组</span>
+            <span class="chip">部门：技术组 ▾</span>
+          </div>
+          <table>
+            <thead><tr><th>姓名</th><th>部门/组</th><th>角色</th><th>自评</th><th>被几人评</th><th>评几人</th><th>来源</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody>
+              <tr><td>张三</td><td>技术组</td><td>普通员工</td><td><span class="tag green">✅</span></td><td>11</td><td>11</td><td><span class="tag gray">自动</span></td><td><span class="tag green">完整</span></td><td><a class="btn link">查看</a></td></tr>
+              <tr><td><b>李四</b></td><td>技术组</td><td><span class="tag blue">领导</span></td><td><span class="tag gold">⚠ 未配</span></td><td>0</td><td>0</td><td><span class="tag gold">白名单·待配</span></td><td><span class="tag red">异常</span></td><td><a class="btn link" data-p="leader">补配</a></td></tr>
+              <tr><td><b>王五</b></td><td><span class="muted">（空）</span></td><td>普通员工</td><td><span class="tag red">❌</span></td><td>0</td><td>0</td><td><span class="tag red">未覆盖</span></td><td><span class="tag red">双漏</span></td><td><a class="btn link">补配</a></td></tr>
+              <tr><td><b>孙七</b></td><td>风控组</td><td>普通员工</td><td><span class="tag green">✅</span></td><td>0</td><td>0</td><td><span class="tag gold">自动</span></td><td><span class="tag gold">单人组</span></td><td><a class="btn link">处理</a></td></tr>
+              <tr><td>周九</td><td>技术组</td><td>普通员工</td><td><span class="tag green">✅</span></td><td>11</td><td>11</td><td><span class="tag gray">自动</span></td><td><span class="tag green">完整</span></td><td><a class="btn link">查看</a></td></tr>
+            </tbody>
+          </table>
+          <div class="legend">
+            <span><span class="dot" style="background:var(--ok)"></span>完整：自评+他评均已配置</span>
+            <span><span class="dot" style="background:var(--warn)"></span>需关注：单人组 / 领导待配</span>
+            <span><span class="dot" style="background:var(--err)"></span>异常：未配自评 / 无人评价 / 双漏</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 6. 员工填写端 -->
+      <section class="page" data-page="employee">
+        <div class="card" style="background:none;box-shadow:none;padding:0">
+          <div class="phone">
+            <div class="phone-head">
+              <h2>360 环评 · 待我填写</h2>
+              <p>2026 Q2 技术部 · 张三（技术组）</p>
+              <div class="progress"><i></i></div>
+              <p style="margin-top:8px">已完成 3 / 5 份</p>
+            </div>
+            <div>
+              <div class="task"><div class="ic">自</div><div class="meta"><div class="t">能力自评问卷</div><div class="d">自评 · 评价对象：我自己</div></div><span class="tag green">已完成</span></div>
+              <div class="task"><div class="ic">评</div><div class="meta"><div class="t">同事互评 · 李四</div><div class="d">他评 · 被评人：李四（技术经理）</div></div><button class="btn primary sm">去填写</button></div>
+              <div class="task"><div class="ic">评</div><div class="meta"><div class="t">同事互评 · 周九</div><div class="d">他评 · 被评人：周九</div></div><button class="btn primary sm">去填写</button></div>
+              <div class="task"><div class="ic">评</div><div class="meta"><div class="t">同事互评 · 王五</div><div class="d">他评 · 被评人：王五</div></div><span class="tag green">已完成</span></div>
+              <div class="task"><div class="ic">评</div><div class="meta"><div class="t">同事互评 · 赵六</div><div class="d">他评 · 被评人：赵六</div></div><span class="tag green">已完成</span></div>
+            </div>
+          </div>
+          <p class="muted" style="text-align:center;margin-top:14px">企微扫码进入后展示。每份他评清晰标注被评人，逐份提交；他评结果对被评人不可见。</p>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<script>
+  const labels={cycles:'评价批次',config:'批次配置',leader:'领导白名单',generate:'生成关系 / 异常',review:'复核列表',employee:'员工填写端'};
+  function go(p){
+    document.querySelectorAll('.page').forEach(e=>e.classList.toggle('show',e.dataset.page===p));
+    document.querySelectorAll('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.p===p));
+    document.getElementById('crumb').innerHTML='360 环评 / <b>'+labels[p]+'</b>';
+    window.scrollTo(0,0);
+  }
+  document.addEventListener('click',e=>{const t=e.target.closest('[data-p]');if(t){e.preventDefault();go(t.dataset.p);}});
+</script>
+</body>
+</html>

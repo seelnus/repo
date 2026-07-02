@@ -1,0 +1,82 @@
+erDiagram
+    ADMIN_USER ||--o{ EVAL_CYCLE : "创建"
+    ADMIN_USER ||--o{ RESPONSE_COMMENT : "评分评语"
+
+    EVAL_CYCLE ||--o{ EVAL_RELATION : "包含评价关系"
+    EVAL_CYCLE }o--|| SURVEY : "self_survey_id 自评模板"
+    EVAL_CYCLE }o--|| SURVEY : "peer_survey_id 他评模板"
+    EVAL_CYCLE }o--|| SURVEY : "leader_survey_id 领导模板"
+
+    CONTACT ||--o{ EVAL_RELATION : "作为评价人 rater"
+    CONTACT ||--o{ EVAL_RELATION : "作为被评人 ratee"
+
+    SURVEY ||--o{ EVAL_RELATION : "关系使用的模板"
+    SURVEY ||--o{ SURVEY_RESPONSE : "答卷归属问卷"
+
+    EVAL_RELATION |o--o| SURVEY_RESPONSE : "提交后回填 response_id"
+    SURVEY_RESPONSE ||--o| RESPONSE_COMMENT : "管理员评语"
+    CONTACT ||--o{ SURVEY_RESPONSE : "被评人 ratee_contact_id"
+
+    ADMIN_USER {
+        int id PK
+        string name
+        string phone
+        bool is_primary
+    }
+
+    CONTACT {
+        int id PK
+        string name UK "通讯录唯一"
+        string department "组织/组 分组依据"
+        string position "职位"
+        string job_no
+        string tags "可打 领导 标记"
+    }
+
+    SURVEY {
+        int id PK
+        string title
+        enum type "assessment / evaluation"
+        json schema_json "题目配置"
+        enum status "draft/published/disabled"
+    }
+
+    EVAL_CYCLE {
+        int id PK
+        string name "批次名称"
+        string scope_department "参评范围"
+        int self_survey_id FK "自评模板"
+        int peer_survey_id FK "他评模板"
+        int leader_survey_id FK "领导模板"
+        string status "draft/generating/published/closed"
+        int created_by FK
+    }
+
+    EVAL_RELATION {
+        int id PK
+        int cycle_id FK
+        int rater_contact_id FK "评价人"
+        int ratee_contact_id FK "被评人"
+        string relation_type "self/peer/leader"
+        int survey_id FK "问卷模板"
+        string source "auto/manual"
+        string status "pending/submitted"
+        int response_id FK "提交后回填"
+    }
+
+    SURVEY_RESPONSE {
+        int id PK
+        int survey_id FK
+        string wecom_userid "评价人企微身份"
+        int ratee_contact_id FK "新增:被评人"
+        json answers_json
+        datetime submitted_at
+    }
+
+    RESPONSE_COMMENT {
+        int id PK
+        int response_id FK
+        int admin_id FK
+        string comment
+        int score
+    }

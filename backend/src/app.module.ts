@@ -3,6 +3,10 @@ import { ConfigModule } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { EvalController } from './eval.controller';
+import { EvalFillController } from './eval-fill.controller';
+import { EvalDevController } from './eval-dev.controller';
+import { EvalService } from './eval.service';
 import { AdminAuthGuard } from './admin-auth.guard';
 import { FillAuthGuard } from './fill-auth.guard';
 import { PrismaService } from './prisma.service';
@@ -16,7 +20,7 @@ import { PrismaService } from './prisma.service';
       signOptions: { expiresIn: '7d' },
     }),
   ],
-  controllers: [AppController],
-  providers: [AppService, PrismaService, AdminAuthGuard, FillAuthGuard],
+  controllers: [AppController, EvalController, EvalFillController, EvalDevController],
+  providers: [AppService, EvalService, PrismaService, AdminAuthGuard, FillAuthGuard],
 })
 export class AppModule {}

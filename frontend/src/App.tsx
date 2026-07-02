@@ -69,6 +69,7 @@ import Papa from 'papaparse';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, ClipboardEvent, ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
+import { EvalCycleList, EvalCycleDetail, EvalFillPage } from './EvalPages';
 
 const API = '/api';
 const FILE_BASE = API.replace(/\/api$/, '');
@@ -144,7 +145,7 @@ type WhitelistRecord = {
   members?: Contact[];
 };
 
-const http = axios.create({ baseURL: API });
+export const http = axios.create({ baseURL: API });
 http.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
@@ -152,7 +153,7 @@ http.interceptors.request.use((config) => {
 });
 
 // 填写端专用 axios 实例（携带 fill_token）
-const fillHttp = axios.create({ baseURL: API });
+export const fillHttp = axios.create({ baseURL: API });
 fillHttp.interceptors.request.use((config) => {
   const token = localStorage.getItem('fill_token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
@@ -170,7 +171,7 @@ http.interceptors.response.use(
   },
 );
 
-async function downloadFile(path: string, filename: string) {
+export async function downloadFile(path: string, filename: string) {
   const response = await http.get(path, { responseType: 'blob' });
   const contentType = String(response.headers['content-type'] || 'text/csv;charset=utf-8;');
   const blob = new Blob([response.data], { type: contentType });
@@ -218,6 +219,7 @@ function App() {
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/s/:shareToken" element={<FillPage />} />
+            <Route path="/eval-fill" element={<EvalFillPage />} />
             <Route path="/success" element={<Result status="success" title="提交成功" />} />
             <Route path="/*" element={<AdminShell />} />
           </Routes>
@@ -304,6 +306,7 @@ function AdminShell() {
           className="app-sider-menu"
           items={[
             { key: '/surveys', label: '问卷管理', icon: <FormOutlined /> },
+            { key: '/eval', label: '360环评', icon: <TableOutlined /> },
             { key: '/whitelists', label: '白名单管理', icon: <TableOutlined /> },
             { key: '/contacts', label: '联系人', icon: <FileTextOutlined /> },
             { key: '/members', label: '后台成员', icon: <CheckSquareOutlined /> },
@@ -313,7 +316,7 @@ function AdminShell() {
       <Layout>
         <Layout.Header className="app-header">
           <div className="app-header-title">{
-            { '/surveys': '问卷管理', '/whitelists': '白名单管理', '/contacts': '联系人', '/members': '后台成员' }[location.pathname] || '问卷管理'
+            { '/surveys': '问卷管理', '/eval': '360环评', '/whitelists': '白名单管理', '/contacts': '联系人', '/members': '后台成员' }[location.pathname] || (location.pathname.startsWith('/eval') ? '360环评' : '问卷管理')
           }</div>
           <Button
             onClick={() => {
@@ -328,6 +331,8 @@ function AdminShell() {
           <Routes>
             <Route path="/" element={<Navigate to="/surveys" />} />
             <Route path="/surveys" element={<SurveyList />} />
+            <Route path="/eval" element={<EvalCycleList />} />
+            <Route path="/eval/:id" element={<EvalCycleDetail />} />
             <Route path="/surveys/new" element={<SurveyEditor />} />
             <Route path="/surveys/:id/edit" element={<SurveyEditor />} />
             <Route path="/surveys/:id/share" element={<SharePage />} />

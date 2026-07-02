@@ -123,11 +123,12 @@ model WhitelistMember {
 }
 
 model SurveyResponse {
-  id           Int      @id @default(autoincrement()) @db.UnsignedInt
-  surveyId     Int      @map("survey_id") @db.UnsignedInt
-  wecomUserid  String   @map("wecom_userid") @db.VarChar(64)
-  answersJson  Json     @map("answers_json")
-  submittedAt  DateTime @default(now()) @map("submitted_at")
+  id             Int      @id @default(autoincrement()) @db.UnsignedInt
+  surveyId       Int      @map("survey_id") @db.UnsignedInt
+  wecomUserid    String   @map("wecom_userid") @db.VarChar(64)
+  rateeContactId Int?     @map("ratee_contact_id") @db.UnsignedInt
+  answersJson    Json     @map("answers_json")
+  submittedAt    DateTime @default(now()) @map("submitted_at")
 
   survey  Survey           @relation(fields: [surveyId], references: [id])
   comment ResponseComment?
@@ -147,4 +148,40 @@ model ResponseComment {
   response SurveyResponse @relation(fields: [responseId], references: [id])
 
   @@map("response_comments")
+}
+
+// ===== 360 环评 =====
+
+model EvalCycle {
+  id              Int      @id @default(autoincrement()) @db.UnsignedInt
+  name            String   @db.VarChar(200)
+  scopeDepartment String?  @map("scope_department") @db.VarChar(200)
+  selfSurveyId    Int?     @map("self_survey_id") @db.UnsignedInt
+  peerSurveyId    Int?     @map("peer_survey_id") @db.UnsignedInt
+  leaderSurveyId  Int?     @map("leader_survey_id") @db.UnsignedInt
+  status          String   @default("draft") @db.VarChar(20)
+  createdBy       Int      @map("created_by") @db.UnsignedInt
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  relations EvalRelation[]
+
+  @@map("eval_cycles")
+}
+
+model EvalRelation {
+  id             Int      @id @default(autoincrement()) @db.UnsignedInt
+  cycleId        Int      @map("cycle_id") @db.UnsignedInt
+  raterContactId Int      @map("rater_contact_id") @db.UnsignedInt
+  rateeContactId Int      @map("ratee_contact_id") @db.UnsignedInt
+  relationType   String   @map("relation_type") @db.VarChar(10)
+  surveyId       Int      @map("survey_id") @db.UnsignedInt
+  source         String   @default("auto") @db.VarChar(10)
+  responseId     Int?     @map("response_id") @db.UnsignedInt
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  cycle EvalCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  @@unique([cycleId, raterContactId, rateeContactId], map: "uk_cycle_rater_ratee")
+  @@map("eval_relations")
 }
