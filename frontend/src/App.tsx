@@ -1399,10 +1399,34 @@ function QuestionTitleTextArea({ value, onChange }: { value: string; onChange: (
   );
 }
 
+const SHARE_STEPS = [
+  '长按保存或识别下方二维码',
+  '打开企业微信，用「扫一扫」扫描二维码',
+  '按提示完成企业微信身份验证',
+  '进入问卷，填写并提交',
+];
+const SHARE_FONT = '"PingFang SC","Microsoft YaHei","Hiragino Sans GB",sans-serif';
+const SHARE_QR_PX = 340; // 图片中二维码显示尺寸（逻辑像素）
+
+function roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
 function SharePage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { message } = AntApp.useApp();
   const [survey, setSurvey] = useState<Survey>();
+  const [previewUrl, setPreviewUrl] = useState<string>();
+  const [generating, setGenerating] = useState(false);
+  const qrRef = useRef<HTMLDivElement>(null);
+  const blobRef = useRef<Blob | null>(null);
 
   useEffect(() => {
     http.get(`/admin/surveys/${id}`).then(({ data }) => setSurvey(data));
@@ -1411,12 +1435,208 @@ function SharePage() {
   if (!survey) return null;
   const url = `${location.origin}/s/${survey.shareToken}`;
 
+  const loadImage = (src: string) =>
+    new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new window.Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = src;
+    });
+
+  const wrapLines = (measure: CanvasRenderingContext2D, text: string, maxW: number, font: string) => {
+    measure.font = font;
+    const lines: string[] = [];
+    let line = '';
+    for (const ch of Array.from(text)) {
+      const test = line + ch;
+      if (measure.measureText(test).width > maxW && line) {
+        lines.push(line);
+        line = ch;
+      } else {
+        line = test;
+      }
+    }
+    if (line) lines.push(line);
+    return lines;
+  };
+
+  const buildImage = async (): Promise<HTMLCanvasElement> => {
+    const qrCanvas = qrRef.current?.querySelector('canvas') as HTMLCanvasElement | null;
+    if (!qrCanvas) throw new Error('二维码未就绪，请稍候重试');
+    let logo: HTMLImageElement | null = null;
+    try {
+      logo = await loadImage('/chuanghuo.png');
+    } catch {
+      logo = null;
+    }
+
+    const scale = 2;
+    const W = 720;
+    const padX = 48;
+    const contentW = W - padX * 2;
+    const HEADER_H = 96;
+    const TITLE_LH = 46;
+    const STEP_LH = 34;
+    const STEP_GAP = 16;
+
+    const titleFont = `600 34px ${SHARE_FONT}`;
+    const stepFont = `400 23px ${SHARE_FONT}`;
+    const measure = document.createElement('canvas').getContext('2d')!;
+    const titleLines = wrapLines(measure, survey.title, contentW, titleFont);
+    const stepLines = SHARE_STEPS.map((s) => wrapLines(measure, s, contentW - 42, stepFont));
+
+    let H = HEADER_H + 34; // 头部 + 间距
+    H += 22 + 12; // 「问卷名称」标签 + 间距
+    H += titleLines.length * TITLE_LH;
+    H += 22; // 间距 -> 步骤标题
+    H += 26 + 16; // 「填写步骤」标题 + 间距
+    stepLines.forEach((lines, i) => {
+      H += lines.length * STEP_LH;
+      if (i < stepLines.length - 1) H += STEP_GAP;
+    });
+    H += 34 + SHARE_QR_PX + 20 + 24 + 40; // QR间距 + QR + 间距 + 底部提示 + 底边距
+
+    const canvas = document.createElement('canvas');
+    canvas.width = W * scale;
+    canvas.height = Math.round(H) * scale;
+    const ctx = canvas.getContext('2d')!;
+    ctx.scale(scale, scale);
+
+    // 背景
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, W, H);
+
+    // 头部深色条
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(0, 0, W, HEADER_H);
+    let brandX = padX;
+    if (logo) {
+      const lh = 44;
+      const lw = Math.round((lh * logo.width) / logo.height);
+      ctx.drawImage(logo, padX, (HEADER_H - lh) / 2, lw, lh);
+      brandX = padX + lw + 14;
+    } else {
+      roundRectPath(ctx, padX, (HEADER_H - 44) / 2, 44, 44, 8);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.fillStyle = '#1e293b';
+      ctx.font = `500 24px ${SHARE_FONT}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('闯', padX + 22, HEADER_H / 2 + 1);
+      ctx.textAlign = 'left';
+      brandX = padX + 44 + 14;
+    }
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `500 26px ${SHARE_FONT}`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText('闯货内部问卷系统', brandX, HEADER_H / 2 + 1);
+
+    // 内容
+    ctx.textBaseline = 'top';
+    let y = HEADER_H + 34;
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = `400 20px ${SHARE_FONT}`;
+    ctx.fillText('问卷名称', padX, y);
+    y += 22 + 12;
+    ctx.fillStyle = '#0f172a';
+    ctx.font = titleFont;
+    for (const ln of titleLines) {
+      ctx.fillText(ln, padX, y);
+      y += TITLE_LH;
+    }
+    y += 22;
+    ctx.fillStyle = '#475569';
+    ctx.font = `500 22px ${SHARE_FONT}`;
+    ctx.fillText('填写步骤', padX, y);
+    y += 26 + 16;
+
+    stepLines.forEach((lines, i) => {
+      ctx.beginPath();
+      ctx.fillStyle = '#3b5bdb';
+      ctx.arc(padX + 15, y + 13, 15, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `500 18px ${SHARE_FONT}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(i + 1), padX + 15, y + 14);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = '#0f172a';
+      ctx.font = stepFont;
+      let ty = y;
+      for (const ln of lines) {
+        ctx.fillText(ln, padX + 42, ty);
+        ty += STEP_LH;
+      }
+      y = ty;
+      if (i < stepLines.length - 1) y += STEP_GAP;
+    });
+
+    y += 34;
+    const qrX = (W - SHARE_QR_PX) / 2;
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.lineWidth = 1;
+    roundRectPath(ctx, qrX - 16, y - 16, SHARE_QR_PX + 32, SHARE_QR_PX + 32, 12);
+    ctx.stroke();
+    ctx.drawImage(qrCanvas, qrX, y, SHARE_QR_PX, SHARE_QR_PX);
+    y += SHARE_QR_PX + 20;
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = `400 20px ${SHARE_FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillText('请使用企业微信「扫一扫」扫码填写', W / 2, y);
+    ctx.textAlign = 'left';
+
+    return canvas;
+  };
+
+  const handleGenerate = async () => {
+    setGenerating(true);
+    try {
+      const canvas = await buildImage();
+      const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/png'));
+      blobRef.current = blob;
+      setPreviewUrl(canvas.toDataURL('image/png'));
+    } catch (e: any) {
+      message.error(e?.message || '生成失败，请重试');
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleCopyImage = async () => {
+    try {
+      const blob = blobRef.current;
+      if (!blob) throw new Error('请先生成图片');
+      if (!navigator.clipboard || typeof ClipboardItem === 'undefined') {
+        throw new Error('当前浏览器不支持复制图片，请使用「下载图片」');
+      }
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      message.success('图片已复制，可直接粘贴到微信');
+    } catch (e: any) {
+      message.error(e?.message || '复制失败，请改用「下载图片」');
+    }
+  };
+
+  const handleDownload = () => {
+    if (!previewUrl) return;
+    const a = document.createElement('a');
+    a.href = previewUrl;
+    a.download = `${survey.title || '问卷'}-分享图片.png`;
+    a.click();
+  };
+
   return (
     <Card title="分享与发布">
+      <div ref={qrRef} style={{ position: 'absolute', left: -99999, top: 0 }} aria-hidden>
+        <QRCode value={url} size={SHARE_QR_PX * 2} bordered={false} />
+      </div>
       <Space direction="vertical" size={16}>
         <QRCode value={url} />
         <Typography.Text copyable>{url}</Typography.Text>
-        <Space>
+        <Space wrap>
           <Button
             type="primary"
             onClick={async () => {
@@ -1426,8 +1646,26 @@ function SharePage() {
           >
             发布并分享
           </Button>
+          <Button onClick={handleGenerate} loading={generating}>
+            生成分享图片
+          </Button>
           <Button onClick={() => navigate('/surveys')}>返回</Button>
         </Space>
+        {previewUrl && (
+          <Space direction="vertical" size={12}>
+            <img
+              src={previewUrl}
+              alt="分享图片预览"
+              style={{ width: 300, border: '1px solid #f0f0f0', borderRadius: 8 }}
+            />
+            <Space>
+              <Button type="primary" onClick={handleCopyImage}>
+                复制图片
+              </Button>
+              <Button onClick={handleDownload}>下载图片</Button>
+            </Space>
+          </Space>
+        )}
       </Space>
     </Card>
   );
