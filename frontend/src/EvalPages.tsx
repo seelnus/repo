@@ -140,7 +140,7 @@ export function EvalCycleList() {
         ]}
       />
 
-      <Modal title="新建评价批次" open={modalOpen} onCancel={() => setModalOpen(false)} onOk={handleCreate} confirmLoading={saving} destroyOnClose>
+      <Modal title="新建评价批次" open={modalOpen} onCancel={() => setModalOpen(false)} onOk={handleCreate} confirmLoading={saving} destroyOnHidden>
         <Form form={form} layout="vertical" preserve={false}>
           <Form.Item name="name" label="批次名称" rules={[{ required: true, message: '请输入批次名称' }]}>
             <Input placeholder="如：2026 Q2 技术部 360 环评" />
@@ -453,7 +453,7 @@ function RelationsTab({ cycleId }: { cycleId: Cycle }) {
         ]}
       />
 
-      <Modal title="人工添加评价关系" open={modalOpen} onCancel={() => setModalOpen(false)} onOk={addRelation} confirmLoading={saving} destroyOnClose>
+      <Modal title="人工添加评价关系" open={modalOpen} onCancel={() => setModalOpen(false)} onOk={addRelation} confirmLoading={saving} destroyOnHidden>
         <Form form={form} layout="vertical" preserve={false} initialValues={{ relationType: 'leader' }}>
           <Form.Item name="relationType" label="关系类型" rules={[{ required: true }]}>
             <Select options={[{ label: '自评', value: 'self' }, { label: '他评', value: 'peer' }, { label: '领导评价', value: 'leader' }]} />
