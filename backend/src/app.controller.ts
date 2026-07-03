@@ -247,6 +247,12 @@ export class AppController {
     }
   }
 
+  // 宣传文档类免登录直看（无 Guard）：宣传文档直接返回内容，其它类型返回 { requiresAuth: true }
+  @Get('survey/:shareToken/public')
+  getPublicDoc(@Param('shareToken') shareToken: string) {
+    return this.app.getPublicDoc(shareToken);
+  }
+
   @UseGuards(FillAuthGuard)
   @Get('survey/:shareToken')
   getPublicSurvey(@Param('shareToken') shareToken: string, @Req() req: any) {

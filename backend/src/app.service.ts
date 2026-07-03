@@ -446,6 +446,18 @@ export class AppService {
     });
   }
 
+  // 宣传文档类免登录直看：任何人凭 shareToken 即可查看已发布的宣传文档（跳过白名单与企微登录）。
+  // 其它类型返回 { requiresAuth: true }，由前端再走企微授权流程。
+  async getPublicDoc(shareToken: string) {
+    const survey = await this.prisma.survey.findUnique({ where: { shareToken } });
+    if (!survey || survey.isDeleted) throw new NotFoundException('问卷不存在或已下线');
+    if (survey.status !== SurveyStatus.published) throw new ForbiddenException('该问卷暂未开放');
+    if (survey.type !== SurveyType.promotional_document) {
+      return { requiresAuth: true as const };
+    }
+    return { ...survey, requiresAuth: false as const };
+  }
+
   async getPublicSurvey(shareToken: string, fillUser: FillUser) {
     const survey = await this.prisma.survey.findUnique({ where: { shareToken } });
     if (!survey || survey.isDeleted) throw new NotFoundException('问卷不存在或已下线');

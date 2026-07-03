@@ -2516,27 +2516,47 @@ function FillPage() {
       return;
     }
 
-    // 2. 检查 fill_token
-    const token = localStorage.getItem('fill_token');
-    if (!token) {
-      // 无 token → 跳转企微授权
+    const gotoAuth = () => {
       window.location.href = `${API.replace('/api', '')}/api/wecom/oauth/url?state=/s/${shareToken}`;
-      return;
-    }
+    };
 
-    // 3. 加载问卷
-    setAuthChecking(false);
+    // 需登录类型（问卷考核/案例收集）：凭 fill_token 加载，无 token 则跳企微授权
+    const loadAuthed = () => {
+      const token = localStorage.getItem('fill_token');
+      if (!token) {
+        gotoAuth();
+        return;
+      }
+      setAuthChecking(false);
+      fillHttp
+        .get(`/survey/${shareToken}`)
+        .then(({ data }) => setSurvey(data))
+        .catch((err) => {
+          if (err.response?.status === 401) {
+            // token 过期，清除后重新授权
+            localStorage.removeItem('fill_token');
+            gotoAuth();
+          } else {
+            setError(err.response?.data?.message || '问卷不存在或已下线');
+          }
+        });
+    };
+
+    // 先匿名探测：宣传文档类免登录直接展示，其它类型再走企微登录
     fillHttp
-      .get(`/survey/${shareToken}`)
-      .then(({ data }) => setSurvey(data))
-      .catch((err) => {
-        if (err.response?.status === 401) {
-          // token 过期，清除后重新授权
-          localStorage.removeItem('fill_token');
-          window.location.href = `${API.replace('/api', '')}/api/wecom/oauth/url?state=/s/${shareToken}`;
+      .get(`/survey/${shareToken}/public`)
+      .then(({ data }) => {
+        if (data?.requiresAuth) {
+          loadAuthed();
         } else {
-          setError(err.response?.data?.message || '问卷不存在或已下线');
+          setSurvey(data);
+          setAuthChecking(false);
         }
+      })
+      .catch((err) => {
+        // 未发布 / 不存在等：直接提示，不进入登录
+        setError(err.response?.data?.message || '问卷不存在或已下线');
+        setAuthChecking(false);
       });
   }, [shareToken]);
 
