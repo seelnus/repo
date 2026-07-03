@@ -515,6 +515,136 @@ export class AppService {
     });
   }
 
+  // ── 数据汇总（白名单 = 应填名册；方案A：以"企微姓名 = 联系人姓名"联结）──
+
+  async getSurveySummary(surveyId: number) {
+    const survey = await this.getAdminSurvey(surveyId);
+
+    // 名册 = 白名单成员（联系人）
+    const whitelist = await this.prisma.surveyWhitelist.findUnique({
+      where: { surveyId },
+      include: { members: { include: { contact: true }, orderBy: { createdAt: 'asc' } } },
+    });
+    const roster = whitelist ? whitelist.members.map((m) => m.contact) : [];
+    const hasWhitelist = roster.length > 0; // 决策：仅"有成员"才算配置了名册
+
+    // 普通填写答卷（rateeContactId=null，与 360 环评隔离）
+    const responses = await this.prisma.surveyResponse.findMany({
+      where: { surveyId, rateeContactId: null },
+      orderBy: { submittedAt: 'desc' },
+    });
+    const users = await this.prisma.wecomUser.findMany({
+      where: { wecomUserid: { in: responses.map((r) => r.wecomUserid) } },
+    });
+    const nameByWecom = new Map(users.map((u) => [u.wecomUserid, u.name]));
+
+    // 最终提交时间：改过取 updatedAt，否则取 submittedAt（避免历史数据 updatedAt 被迁移回填干扰）
+    const filledAtOf = (r: any) => (r.submitCount >= 2 ? r.updatedAt : r.submittedAt);
+
+    // 每个填写人姓名取最新一条（responses 已按 submittedAt desc）
+    const latestByName = new Map<string, any>();
+    const noNameResponses: any[] = [];
+    for (const r of responses) {
+      const nm = nameByWecom.get(r.wecomUserid);
+      if (!nm) {
+        noNameResponses.push(r);
+        continue;
+      }
+      if (!latestByName.has(nm)) latestByName.set(nm, r);
+    }
+
+    let rows: any[] = [];
+    const outsiders: any[] = [];
+
+    if (hasWhitelist) {
+      const consumed = new Set<string>();
+      rows = roster.map((c) => {
+        const r = latestByName.get(c.name);
+        if (r) consumed.add(c.name);
+        return {
+          contactId: c.id,
+          name: c.name,
+          department: c.department,
+          jobNo: c.jobNo,
+          submitted: !!r,
+          edited: r ? r.submitCount >= 2 : false,
+          filledAt: r ? filledAtOf(r) : null,
+          responseId: r?.id ?? null,
+        };
+      });
+      // 名单外：填了但不在名册
+      for (const [nm, r] of latestByName) {
+        if (consumed.has(nm)) continue;
+        outsiders.push({ name: nm, wecomUserid: r.wecomUserid, filledAt: filledAtOf(r), responseId: r.id, edited: r.submitCount >= 2 });
+      }
+      for (const r of noNameResponses) {
+        outsiders.push({ name: null, wecomUserid: r.wecomUserid, filledAt: filledAtOf(r), responseId: r.id, edited: r.submitCount >= 2 });
+      }
+    } else {
+      // 无名册：仅展示已填写人（每个姓名一行，无企微姓名的用 wecomUserid 兜底）
+      const seen = new Set<string>();
+      for (const r of responses) {
+        const nm = nameByWecom.get(r.wecomUserid);
+        const key = nm ?? `wx:${r.wecomUserid}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        rows.push({
+          contactId: null,
+          name: nm ?? r.wecomUserid,
+          department: null,
+          jobNo: null,
+          submitted: true,
+          edited: r.submitCount >= 2,
+          filledAt: filledAtOf(r),
+          responseId: r.id,
+        });
+      }
+    }
+
+    // 决策：默认按填写时间倒序，未填排最后
+    rows.sort((a, b) => {
+      if (!a.filledAt && !b.filledAt) return 0;
+      if (!a.filledAt) return 1;
+      if (!b.filledAt) return -1;
+      return new Date(b.filledAt).getTime() - new Date(a.filledAt).getTime();
+    });
+
+    const total = hasWhitelist ? roster.length : rows.length;
+    const submitted = rows.filter((r) => r.submitted).length;
+    const unsubmitted = Math.max(0, total - submitted);
+    const rate = total === 0 ? 1 : submitted / total;
+
+    return {
+      survey: { id: survey.id, title: survey.title, type: survey.type },
+      hasWhitelist,
+      summary: { total, submitted, unsubmitted, rate },
+      rows,
+      outsiders,
+    };
+  }
+
+  async exportSurveySummary(surveyId: number) {
+    const data = await this.getSurveySummary(surveyId);
+    const fmt = (t: any) => (t ? new Date(t).toLocaleString('zh-CN') : '');
+    const rosterRows = data.rows.map((r: any) => ({
+      姓名: r.name,
+      部门: r.department || '',
+      工号: r.jobNo || '',
+      填写情况: r.submitted ? '已填' : '未填',
+      填写时间: fmt(r.filledAt),
+      是否修改: r.submitted ? (r.edited ? '是' : '否') : '',
+    }));
+    const outsiderRows = data.outsiders.map((o: any) => ({
+      姓名: o.name || o.wecomUserid,
+      部门: '（名单外）',
+      工号: '',
+      填写情况: '已填',
+      填写时间: fmt(o.filledAt),
+      是否修改: o.edited ? '是' : '否',
+    }));
+    return stringify([...rosterRows, ...outsiderRows], { header: true, bom: true });
+  }
+
   async listResponses(surveyId: number, startDate?: Date, endDate?: Date) {
     await this.getAdminSurvey(surveyId);
     const dateFilter: any = {};

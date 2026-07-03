@@ -1,4 +1,5 @@
 import {
+  BarChartOutlined,
   CalendarOutlined,
   CheckSquareOutlined,
   ClearOutlined,
@@ -49,8 +50,10 @@ import {
   Menu,
   Modal,
   Popconfirm,
+  Progress,
   QRCode,
   Result,
+  Segmented,
   Select,
   Space,
   Switch,
@@ -337,6 +340,7 @@ function AdminShell() {
             <Route path="/surveys/:id/edit" element={<SurveyEditor />} />
             <Route path="/surveys/:id/share" element={<SharePage />} />
             <Route path="/surveys/:id/responses" element={<ResponsesPage />} />
+            <Route path="/surveys/:id/summary" element={<SummaryPage />} />
             <Route path="/whitelists" element={<WhitelistListPage />} />
             <Route path="/whitelists/new" element={<WhitelistEditorPage />} />
             <Route path="/whitelists/:surveyId/edit" element={<WhitelistEditorPage />} />
@@ -643,6 +647,9 @@ function SurveyList() {
                   <Button icon={<LinkOutlined />} onClick={() => navigate(`/surveys/${row.id}/share`)}>分享</Button>
                   <Button icon={<EyeOutlined />} onClick={() => navigate(`/surveys/${row.id}/responses`)}>数据</Button>
                   <Button icon={<DownloadOutlined />} onClick={() => { setExportRange(null); setExportModal({ open: true, surveyId: row.id, surveyTitle: row.title }); }}>导出 CSV</Button>
+                  {row.type !== 'promotional_document' && (
+                    <Button icon={<BarChartOutlined />} onClick={() => navigate(`/surveys/${row.id}/summary`)}>数据汇总</Button>
+                  )}
                   <Button onClick={() => { setMoveTarget(undefined); setMoveModal({ open: true, survey: row }); }}>移动</Button>
                   <Popconfirm title="确认删除该问卷？" cancelText="取消" onConfirm={async () => { await http.delete(`/admin/surveys/${row.id}`); loadSurveys(); loadFolders(); }}>
                     <Button danger icon={<DeleteOutlined />}>删除</Button>
@@ -1668,6 +1675,145 @@ function SharePage() {
         )}
       </Space>
     </Card>
+  );
+}
+
+function SummaryPage() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const [data, setData] = useState<any>();
+  const [loading, setLoading] = useState(false);
+  const [filter, setFilter] = useState<'all' | 'submitted' | 'unsubmitted'>('all');
+  const [keyword, setKeyword] = useState('');
+
+  async function load() {
+    setLoading(true);
+    try {
+      setData((await http.get(`/admin/surveys/${id}/summary`)).data);
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => { load(); }, [id]);
+
+  if (!data) return <Card loading />;
+
+  const s = data.summary;
+  const ratePct = Math.round((s.rate || 0) * 100);
+  const rows = (data.rows || []).filter((row: any) => {
+    if (filter === 'submitted' && !row.submitted) return false;
+    if (filter === 'unsubmitted' && row.submitted) return false;
+    if (keyword.trim() && !String(row.name || '').includes(keyword.trim())) return false;
+    return true;
+  });
+
+  const metrics = [
+    { label: '应填人数', value: s.total, color: '#1f2733' },
+    { label: '已填人数', value: s.submitted, color: '#52C41A' },
+    { label: '未填人数', value: s.unsubmitted, color: '#FA8C16' },
+    { label: '完成率', value: `${ratePct}%`, color: '#1f2733' },
+  ];
+
+  return (
+    <>
+      <div className="toolbar">
+        <Space style={{ fontSize: 14 }}>
+          <span style={{ color: '#4E73F5', cursor: 'pointer' }} onClick={() => navigate('/surveys')}>问卷管理</span>
+          <span style={{ color: '#aaa' }}>/</span>
+          <span style={{ fontWeight: 500 }}>数据汇总</span>
+        </Space>
+        <Button onClick={() => navigate('/surveys')}>返回</Button>
+      </div>
+
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 16, fontWeight: 600 }}>{data.survey.title}</span>
+          <Tag color={surveyTypeColor(data.survey.type)}>{surveyTypeLabel(data.survey.type)}</Tag>
+          <Tag color={data.hasWhitelist ? 'green' : 'default'}>{data.hasWhitelist ? '白名单已开启' : '未设白名单'}</Tag>
+        </div>
+        {!data.hasWhitelist && (
+          <Alert style={{ marginBottom: 16 }} type="info" showIcon message="该问卷未配置白名单，仅展示已填写人员，完成率按已填计（100%）。" />
+        )}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
+          {metrics.map((m) => (
+            <div key={m.label} style={{ background: '#f7f8fa', borderRadius: 8, padding: '14px 16px' }}>
+              <div style={{ fontSize: 13, color: '#888' }}>{m.label}</div>
+              <div style={{ fontSize: 24, fontWeight: 600, color: m.color }}>{m.value}</div>
+            </div>
+          ))}
+        </div>
+        <Progress percent={ratePct} strokeColor="#4E73F5" />
+      </Card>
+
+      <Card>
+        <div className="toolbar">
+          <div className="toolbar-left">
+            <Segmented
+              value={filter}
+              onChange={(v) => setFilter(v as any)}
+              options={[
+                { label: `全部 ${s.total}`, value: 'all' },
+                { label: `已填 ${s.submitted}`, value: 'submitted' },
+                { label: `未填 ${s.unsubmitted}`, value: 'unsubmitted' },
+              ]}
+            />
+            <Input.Search placeholder="搜索姓名" allowClear value={keyword} onChange={(e) => setKeyword(e.target.value)} style={{ width: 200 }} />
+          </div>
+          <Button icon={<DownloadOutlined />} onClick={() => downloadFile(`/admin/surveys/${id}/summary/export`, `survey-${id}-roster.csv`)}>导出名册</Button>
+        </div>
+        <Table
+          rowKey={(row: any) => row.contactId ?? row.name}
+          loading={loading}
+          dataSource={rows}
+          pagination={false}
+          columns={[
+            { title: '姓名', dataIndex: 'name' },
+            { title: '部门', dataIndex: 'department', render: (v: string) => v || '—' },
+            {
+              title: '填写情况',
+              dataIndex: 'submitted',
+              render: (v: boolean, row: any) =>
+                v ? (
+                  <Space size={4}>
+                    <Tag color="green">已填</Tag>
+                    {row.edited && <span style={{ fontSize: 12, color: '#aaa' }}>已改</span>}
+                  </Space>
+                ) : (
+                  <Tag>未填</Tag>
+                ),
+            },
+            { title: '填写时间', dataIndex: 'filledAt', render: (v: string) => (v ? new Date(v).toLocaleString() : '—') },
+            {
+              title: '操作',
+              render: (_: unknown, row: any) =>
+                row.submitted ? (
+                  <Button type="link" style={{ padding: 0 }} onClick={() => navigate(`/surveys/${id}/responses`)}>查看</Button>
+                ) : (
+                  <span style={{ color: '#ccc' }}>—</span>
+                ),
+            },
+          ]}
+        />
+        {data.outsiders?.length > 0 && (
+          <Alert
+            style={{ marginTop: 16 }}
+            type="warning"
+            showIcon
+            message={`另有 ${data.outsiders.length} 位名单外人员提交了答卷（不计入完成率）`}
+            description={
+              <Space direction="vertical" style={{ width: '100%' }}>
+                {data.outsiders.map((o: any, i: number) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>{o.name || o.wecomUserid}</span>
+                    <span style={{ color: '#888' }}>{o.filledAt ? new Date(o.filledAt).toLocaleString() : ''}</span>
+                  </div>
+                ))}
+              </Space>
+            }
+          />
+        )}
+      </Card>
+    </>
   );
 }
 

@@ -158,6 +158,19 @@ export class AppController {
   }
 
   @UseGuards(AdminAuthGuard)
+  @Get('admin/surveys/:id/summary')
+  getSurveySummary(@Param('id', ParseIntPipe) id: number) {
+    return this.app.getSurveySummary(id);
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @Get('admin/surveys/:id/summary/export')
+  @Header('Content-Type', 'text/csv; charset=utf-8')
+  async exportSurveySummary(@Param('id', ParseIntPipe) id: number, @Res() res: Response) {
+    res.attachment(`survey-${id}-roster.csv`).send(await this.app.exportSurveySummary(id));
+  }
+
+  @UseGuards(AdminAuthGuard)
   @Get('admin/surveys/:id/export')
   @Header('Content-Type', 'text/csv; charset=utf-8')
   async exportSurvey(
