@@ -437,6 +437,15 @@ export class AppService {
 
   // ── 公开问卷 ──
 
+  // 每人每卷最多提交 2 次（1 次初填 + 1 次修改）。仅统计普通填写记录（rateeContactId=null），
+  // 与 360 环评的答卷（rateeContactId 非空）隔离，互不干扰。
+  private findOwnResponse(surveyId: number, wecomUserid: string) {
+    return this.prisma.surveyResponse.findFirst({
+      where: { surveyId, wecomUserid, rateeContactId: null },
+      orderBy: { submittedAt: 'desc' },
+    });
+  }
+
   async getPublicSurvey(shareToken: string, fillUser: FillUser) {
     const survey = await this.prisma.survey.findUnique({ where: { shareToken } });
     if (!survey || survey.isDeleted) throw new NotFoundException('问卷不存在或已下线');
@@ -444,7 +453,18 @@ export class AppService {
     await this.ensureWhitelistAccess(survey.id, fillUser);
 
     const currentUser = { wecomUserid: fillUser.wecomUserid, name: fillUser.name };
-    return { ...survey, currentUser, alreadySubmitted: false };
+    const existing = await this.findOwnResponse(survey.id, fillUser.wecomUserid);
+    const submission = existing
+      ? {
+          submitted: true,
+          canEdit: existing.submitCount < 2, // 还剩一次修改机会
+          submitCount: existing.submitCount,
+          answers: existing.answersJson,
+          submittedAt: existing.submittedAt,
+          updatedAt: existing.updatedAt,
+        }
+      : { submitted: false, canEdit: false, submitCount: 0, answers: null, submittedAt: null, updatedAt: null };
+    return { ...survey, currentUser, submission, alreadySubmitted: submission.submitted };
   }
 
   async submitSurvey(shareToken: string, answersJson: Record<string, unknown>, fillUser: FillUser) {
@@ -453,11 +473,32 @@ export class AppService {
       throw new BadRequestException('宣传文档类不支持提交答卷');
     }
     this.validateAnswers(survey.schemaJson as SurveySchema, answersJson);
-    return this.prisma.surveyResponse.create({
+
+    const existing = await this.findOwnResponse(survey.id, fillUser.wecomUserid);
+
+    // 初次提交
+    if (!existing) {
+      return this.prisma.surveyResponse.create({
+        data: {
+          surveyId: survey.id,
+          wecomUserid: fillUser.wecomUserid,
+          answersJson: answersJson as Prisma.InputJsonValue,
+          submitCount: 1,
+        },
+      });
+    }
+
+    // 修改机会已用完
+    if (existing.submitCount >= 2) {
+      throw new ForbiddenException('您已完成问卷填写，修改次数已用完');
+    }
+
+    // 唯一一次修改：原地覆盖答案，管理员始终只看到每人一份最终结果
+    return this.prisma.surveyResponse.update({
+      where: { id: existing.id },
       data: {
-        surveyId: survey.id,
-        wecomUserid: fillUser.wecomUserid,
         answersJson: answersJson as Prisma.InputJsonValue,
+        submitCount: existing.submitCount + 1,
       },
     });
   }

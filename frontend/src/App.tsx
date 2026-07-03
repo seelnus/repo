@@ -2494,6 +2494,7 @@ function FillPage() {
   const [answers, setAnswers] = useState<Record<string, any>>({});
   const [submitting, setSubmitting] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
+  const [editMode, setEditMode] = useState(false);
 
   useEffect(() => {
     // 1. 从 URL 提取 fill_token / auth_error（OAuth 回调带回来的）
@@ -2559,13 +2560,65 @@ function FillPage() {
     );
   }
 
+  const bannerTag =
+    ({ assessment: '问卷考核', case_collection: '案例收集', promotional_document: '宣传文档' } as Record<string, string>)[survey.type] || '问卷';
+
+  // 已提交 + 非编辑态 → 展示「已完成」页（含"修改问卷（仅限一次）"）
+  const submission = survey.submission;
+  if (submission?.submitted && !editMode) {
+    const edited = submission.submitCount >= 2;
+    const timeStr = new Date(edited ? submission.updatedAt : submission.submittedAt).toLocaleString();
+    return (
+      <div className="fill-page">
+        <div className="fill-banner">
+          <div className="fill-banner-tag">{bannerTag}</div>
+          <div className="fill-banner-title">{survey.title}</div>
+          {survey.currentUser?.name && <div className="fill-banner-user">填写人：{survey.currentUser.name}</div>}
+        </div>
+        <div className="fill-body">
+          <div className="fill-done-card">
+            <div className="fill-done-icon">✓</div>
+            <div className="fill-done-title">您已完成问卷填写</div>
+            <div className="fill-done-time">提交时间 {timeStr}{edited ? ' · 已修改 1 次' : ''}</div>
+            {submission.canEdit ? (
+              <>
+                <Button
+                  type="primary"
+                  block
+                  size="large"
+                  className="fill-submit-btn fill-edit-btn"
+                  onClick={() => {
+                    setAnswers({ ...(submission.answers || {}) });
+                    setEditMode(true);
+                    window.scrollTo(0, 0);
+                  }}
+                >
+                  修改问卷（仅限一次）
+                </Button>
+                <div className="fill-done-hint">还可修改 1 次</div>
+              </>
+            ) : (
+              <div className="fill-done-note">修改机会已用完，如需变更请联系管理员</div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   async function submit() {
     if (submitting) return;
 
     setSubmitting(true);
     try {
       await fillHttp.post(`/survey/${shareToken}/submit`, { answers });
-      navigate('/success');
+      // 重新拉取问卷状态，回到「已完成」页（修改机会按新状态展示/隐藏）
+      const { data } = await fillHttp.get(`/survey/${shareToken}`);
+      setSurvey(data);
+      setEditMode(false);
+      setAnswers({});
+      window.scrollTo(0, 0);
+      message.success(editMode ? '修改已提交' : '提交成功');
     } catch (err: any) {
       message.error(err.response?.data?.message || '提交失败');
     } finally {
@@ -2596,6 +2649,12 @@ function FillPage() {
       </div>
 
       <div className="fill-body">
+        {editMode && (
+          <div className="fill-edit-warning">
+            <span className="fill-edit-warning-icon">!</span>
+            正在修改，提交后将无法再次修改
+          </div>
+        )}
         {/* 悬浮进度卡片 */}
         <div className="fill-progress-card">
           <div className="fill-progress-text">
@@ -2649,7 +2708,7 @@ function FillPage() {
             disabled={submitting}
             className="fill-submit-btn"
           >
-            提交问卷
+            {editMode ? '提交修改' : '提交问卷'}
           </Button>
         </Form>
       </div>

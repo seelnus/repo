@@ -1,0 +1,4 @@
+-- AlterTable
+ALTER TABLE `survey_responses`
+    ADD COLUMN `submit_count` TINYINT UNSIGNED NOT NULL DEFAULT 1,
+    ADD COLUMN `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3);

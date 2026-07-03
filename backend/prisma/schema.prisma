@@ -128,7 +128,9 @@ model SurveyResponse {
   wecomUserid    String   @map("wecom_userid") @db.VarChar(64)
   rateeContactId Int?     @map("ratee_contact_id") @db.UnsignedInt
   answersJson    Json     @map("answers_json")
+  submitCount    Int      @default(1) @map("submit_count") @db.UnsignedTinyInt
   submittedAt    DateTime @default(now()) @map("submitted_at")
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
 
   survey  Survey           @relation(fields: [surveyId], references: [id])
   comment ResponseComment?
