@@ -222,6 +222,7 @@ function App() {
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/s/:shareToken" element={<FillPage />} />
+            <Route path="/my" element={<MySurveysPage />} />
             <Route path="/eval-fill" element={<EvalFillPage />} />
             <Route path="/success" element={<Result status="success" title="提交成功" />} />
             <Route path="/*" element={<AdminShell />} />
@@ -253,7 +254,7 @@ function LoginPage() {
       <div className="login-left">
         <div className="login-brand">
           <img src="/chuanghuo.png" alt="闯货" className="login-brand-icon" />
-          <div className="login-brand-name">内部问卷系统</div>
+          <div className="login-brand-name">闯货人事管理系统</div>
           <div className="login-brand-sub">高效的企业内部调研与考核平台</div>
         </div>
         <ul className="login-features">
@@ -299,7 +300,7 @@ function AdminShell() {
       <Layout.Sider width={216} theme="dark" className="app-sider">
         <div className="sider-logo">
           <span className="sider-logo-icon">📋</span>
-          <span className="sider-logo-text">内部问卷系统</span>
+          <span className="sider-logo-text">闯货人事管理系统</span>
         </div>
         <Menu
           theme="dark"
@@ -1537,7 +1538,7 @@ function SharePage() {
     ctx.fillStyle = '#ffffff';
     ctx.font = `500 26px ${SHARE_FONT}`;
     ctx.textBaseline = 'middle';
-    ctx.fillText('闯货内部问卷系统', brandX, HEADER_H / 2 + 1);
+    ctx.fillText('闯货人事管理系统', brandX, HEADER_H / 2 + 1);
 
     // 内容
     ctx.textBaseline = 'top';
@@ -2628,6 +2629,125 @@ function MembersPage() {
         </Form>
       </Modal>
     </Card>
+  );
+}
+
+function MySurveysPage() {
+  const navigate = useNavigate();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+  const [data, setData] = useState<{ user?: { name?: string }; pending: any[]; filled: any[] }>({ pending: [], filled: [] });
+  const [tab, setTab] = useState('pending');
+
+  useEffect(() => {
+    // 1. 从 URL 提取企微登录回调带回的 fill_token / auth_error
+    const params = new URLSearchParams(window.location.search);
+    const newToken = params.get('fill_token');
+    const authError = params.get('auth_error');
+    if (newToken) {
+      localStorage.setItem('fill_token', newToken);
+      params.delete('fill_token');
+      const clean = params.toString() ? `?${params.toString()}` : '';
+      window.history.replaceState({}, '', `${window.location.pathname}${clean}`);
+    }
+    if (authError) {
+      setError(decodeURIComponent(authError));
+      setLoading(false);
+      return;
+    }
+
+    // 2. 无 token 则跳企微登录（qrConnect/WwLogin SSO），state 带回 /my
+    const gotoAuth = () => {
+      window.location.href = `${API.replace('/api', '')}/api/wecom/oauth/url?state=/my`;
+    };
+    const token = localStorage.getItem('fill_token');
+    if (!token) {
+      gotoAuth();
+      return;
+    }
+
+    fillHttp
+      .get('/my/surveys')
+      .then((res) => {
+        setData(res.data);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (err.response?.status === 401) {
+          localStorage.removeItem('fill_token');
+          gotoAuth();
+        } else {
+          setError(err.response?.data?.message || '加载失败，请稍后重试');
+          setLoading(false);
+        }
+      });
+  }, []);
+
+  const typeLabel = (t: string) =>
+    (({ assessment: '问卷考核', case_collection: '案例收集' } as Record<string, string>)[t] || '问卷');
+
+  if (loading) return <div className="fill-page"><Card loading style={{ margin: 'auto', marginTop: 80, maxWidth: 400 }} /></div>;
+  if (error) return <Result status="warning" title={error} />;
+
+  const pending = data.pending || [];
+  const filled = data.filled || [];
+
+  const pendingList = pending.length ? (
+    <div className="my-list">
+      {pending.map((s) => (
+        <div className="my-card" key={s.id}>
+          <div className="my-card-top">
+            <span className="my-card-title">{s.title}</span>
+            <Tag color="blue">{typeLabel(s.type)}</Tag>
+          </div>
+          <div className="my-card-foot">
+            <span className="my-card-note">待你填写</span>
+            <Button type="primary" onClick={() => navigate(`/s/${s.shareToken}`)}>去填写</Button>
+          </div>
+        </div>
+      ))}
+    </div>
+  ) : (
+    <Empty description="暂无待填写的问卷" style={{ marginTop: 60 }} />
+  );
+
+  const filledList = filled.length ? (
+    <div className="my-list">
+      {filled.map((s) => (
+        <div className="my-card" key={s.id}>
+          <div className="my-card-top">
+            <span className="my-card-title">{s.title}</span>
+            <Tag color={s.canEdit ? 'orange' : 'green'}>{s.canEdit ? '可修改一次' : '已完成'}</Tag>
+          </div>
+          <div className="my-card-foot">
+            <span className="my-card-note">提交于 {new Date(s.finishedAt).toLocaleString()}</span>
+            <Button onClick={() => navigate(`/s/${s.shareToken}`)}>{s.canEdit ? '修改' : '查看'}</Button>
+          </div>
+        </div>
+      ))}
+    </div>
+  ) : (
+    <Empty description="你还没有填写过问卷" style={{ marginTop: 60 }} />
+  );
+
+  return (
+    <div className="fill-page my-page">
+      <div className="my-header">
+        <div className="my-header-title">我的问卷</div>
+        {data.user?.name && <div className="my-header-user">{data.user.name}</div>}
+      </div>
+      <div className="my-body">
+        <Tabs
+          activeKey={tab}
+          onChange={setTab}
+          centered
+          items={[
+            { key: 'pending', label: `待填写${pending.length ? ` (${pending.length})` : ''}`, children: pendingList },
+            { key: 'filled', label: `已填写${filled.length ? ` (${filled.length})` : ''}`, children: filledList },
+          ]}
+        />
+      </div>
+    </div>
   );
 }
 

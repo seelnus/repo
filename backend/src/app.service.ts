@@ -439,6 +439,66 @@ export class AppService {
 
   // 每人每卷最多提交 2 次（1 次初填 + 1 次修改）。仅统计普通填写记录（rateeContactId=null），
   // 与 360 环评的答卷（rateeContactId 非空）隔离，互不干扰。
+  // ── 我的问卷（企微内「我的问卷」页数据源）──
+  // 待填写：已发布 + 可填类 + 白名单(enabled)包含当前用户 + 尚未填写
+  // 已填写：当前用户全部普通答卷对应的问卷，不受白名单限制（覆盖二维码分发、无白名单的问卷）
+  async getMySurveys(fillUser: FillUser) {
+    const contactId = fillUser.sub;
+    const wecomUserid = fillUser.wecomUserid;
+
+    const responses = await this.prisma.surveyResponse.findMany({
+      where: { wecomUserid, rateeContactId: null },
+      include: { survey: true },
+      orderBy: [{ updatedAt: 'desc' }, { submittedAt: 'desc' }],
+    });
+
+    const filledSurveyIds = new Set<number>();
+    const filled: any[] = [];
+    for (const r of responses) {
+      const s = r.survey;
+      if (!s || s.isDeleted || s.type === SurveyType.promotional_document) continue;
+      if (filledSurveyIds.has(s.id)) continue; // 每卷仅取最新一条
+      filledSurveyIds.add(s.id);
+      const edited = r.submitCount >= 2;
+      filled.push({
+        id: s.id,
+        shareToken: s.shareToken,
+        title: s.title,
+        type: s.type,
+        status: s.status,
+        submitCount: r.submitCount,
+        canEdit: r.submitCount < 2,
+        finishedAt: edited ? r.updatedAt : r.submittedAt,
+      });
+    }
+
+    const whitelists = await this.prisma.surveyWhitelist.findMany({
+      where: {
+        enabled: true,
+        members: { some: { contactId } },
+        survey: {
+          isDeleted: false,
+          status: SurveyStatus.published,
+          type: { in: [SurveyType.assessment, SurveyType.case_collection] },
+        },
+      },
+      include: { survey: true },
+    });
+
+    const pending = whitelists
+      .filter((w) => w.survey && !filledSurveyIds.has(w.surveyId))
+      .sort((a, b) => b.survey.updatedAt.getTime() - a.survey.updatedAt.getTime())
+      .map((w) => ({
+        id: w.survey.id,
+        shareToken: w.survey.shareToken,
+        title: w.survey.title,
+        type: w.survey.type,
+        status: w.survey.status,
+      }));
+
+    return { user: { name: fillUser.name }, pending, filled };
+  }
+
   private findOwnResponse(surveyId: number, wecomUserid: string) {
     return this.prisma.surveyResponse.findFirst({
       where: { surveyId, wecomUserid, rateeContactId: null },

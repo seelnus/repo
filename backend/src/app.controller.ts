@@ -277,4 +277,10 @@ export class AppController {
   submitSurvey(@Param('shareToken') shareToken: string, @Body('answers') answers: Record<string, unknown>, @Req() req: any) {
     return this.app.submitSurvey(shareToken, answers || {}, req.fillUser);
   }
+
+  @UseGuards(FillAuthGuard)
+  @Get('my/surveys')
+  getMySurveys(@Req() req: any) {
+    return this.app.getMySurveys(req.fillUser);
+  }
 }
