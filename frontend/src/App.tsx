@@ -2708,7 +2708,11 @@ function MySurveysPage() {
       ))}
     </div>
   ) : (
-    <Empty description="暂无待填写的问卷" style={{ marginTop: 60 }} />
+    <div className="my-empty">
+      <div className="my-empty-ic"><FileTextOutlined /></div>
+      <div className="my-empty-title">暂无待填写的问卷</div>
+      <div className="my-empty-sub">指派给你的问卷会出现在这里，记得及时填写</div>
+    </div>
   );
 
   const filledList = filled.length ? (
@@ -2727,7 +2731,11 @@ function MySurveysPage() {
       ))}
     </div>
   ) : (
-    <Empty description="你还没有填写过问卷" style={{ marginTop: 60 }} />
+    <div className="my-empty">
+      <div className="my-empty-ic"><FileTextOutlined /></div>
+      <div className="my-empty-title">你还没有填写过问卷</div>
+      <div className="my-empty-sub">完成的问卷会归档在这里</div>
+    </div>
   );
 
   return (
@@ -2736,16 +2744,16 @@ function MySurveysPage() {
         <div className="my-header-title">我的问卷</div>
         {data.user?.name && <div className="my-header-user">{data.user.name}</div>}
       </div>
-      <div className="my-body">
-        <Tabs
-          activeKey={tab}
-          onChange={setTab}
-          centered
-          items={[
-            { key: 'pending', label: `待填写${pending.length ? ` (${pending.length})` : ''}`, children: pendingList },
-            { key: 'filled', label: `已填写${filled.length ? ` (${filled.length})` : ''}`, children: filledList },
-          ]}
-        />
+      <div className="my-sheet">
+        <div className="my-seg">
+          <button className={tab === 'pending' ? 'on' : ''} onClick={() => setTab('pending')}>
+            待填写 <span className="n">{pending.length}</span>
+          </button>
+          <button className={tab === 'filled' ? 'on' : ''} onClick={() => setTab('filled')}>
+            已填写 <span className="n">{filled.length}</span>
+          </button>
+        </div>
+        {tab === 'pending' ? pendingList : filledList}
       </div>
     </div>
   );
