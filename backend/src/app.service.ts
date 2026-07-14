@@ -336,6 +336,7 @@ export class AppService {
           schemaJson: this.normalizeSchema(data.schemaJson, surveyType),
           status: SurveyStatus.draft,
           shareToken: randomBytes(16).toString('hex'),
+          publicFill: this.resolvePublicFill(surveyType, data.publicFill),
           createdBy: adminId,
         },
       });
@@ -353,11 +354,18 @@ export class AppService {
           title: data.title,
           type: data.type,
           schemaJson: this.normalizeSchema(data.schemaJson, data.type),
+          publicFill: this.resolvePublicFill(data.type, data.publicFill),
         },
       });
     } catch (error) {
       this.handleSurveyWriteError(error);
     }
+  }
+
+  // 免登录填写开关：仅问卷考核/案例收集可开启；其它类型强制关闭
+  private resolvePublicFill(type: SurveyType | undefined, publicFill: unknown) {
+    const allowed = type === SurveyType.assessment || type === SurveyType.case_collection;
+    return allowed ? Boolean(publicFill) : false;
   }
 
   async publishSurvey(id: number) {
@@ -479,6 +487,7 @@ export class AppService {
         survey: {
           isDeleted: false,
           status: SurveyStatus.published,
+          publicFill: false,
           type: { in: [SurveyType.assessment, SurveyType.case_collection] },
         },
       },
@@ -512,7 +521,9 @@ export class AppService {
     const survey = await this.prisma.survey.findUnique({ where: { shareToken } });
     if (!survey || survey.isDeleted) throw new NotFoundException('问卷不存在或已下线');
     if (survey.status !== SurveyStatus.published) throw new ForbiddenException('该问卷暂未开放');
-    if (survey.type !== SurveyType.promotional_document) {
+    // 免登录直看/直填：宣传文档，或开启了「免登录填写」的问卷
+    const noAuth = survey.type === SurveyType.promotional_document || survey.publicFill;
+    if (!noAuth) {
       return { requiresAuth: true as const };
     }
     return { ...survey, requiresAuth: false as const };
@@ -571,6 +582,25 @@ export class AppService {
       data: {
         answersJson: answersJson as Prisma.InputJsonValue,
         submitCount: existing.submitCount + 1,
+      },
+    });
+  }
+
+  // ── 免登录（外部）问卷提交 ──
+  // 仅对 publicFill=true 的已发布问卷开放；匿名不限次，每次提交生成一条 ext-<随机> 记录
+  async submitPublicSurvey(shareToken: string, answersJson: Record<string, unknown>) {
+    const survey = await this.prisma.survey.findUnique({ where: { shareToken } });
+    if (!survey || survey.isDeleted) throw new NotFoundException('问卷不存在或已下线');
+    if (survey.status !== SurveyStatus.published) throw new ForbiddenException('该问卷暂未开放');
+    if (!survey.publicFill) throw new ForbiddenException('该问卷需登录后填写');
+    if (survey.type === SurveyType.promotional_document) throw new BadRequestException('宣传文档类不支持提交答卷');
+    this.validateAnswers(survey.schemaJson as SurveySchema, answersJson);
+    return this.prisma.surveyResponse.create({
+      data: {
+        surveyId: survey.id,
+        wecomUserid: `ext-${randomBytes(12).toString('hex')}`,
+        answersJson: answersJson as Prisma.InputJsonValue,
+        submitCount: 1,
       },
     });
   }

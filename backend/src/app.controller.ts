@@ -266,6 +266,12 @@ export class AppController {
     return this.app.getPublicDoc(shareToken);
   }
 
+  // 免登录（外部）问卷提交（无 Guard）：仅对 publicFill=true 的问卷放行
+  @Post('survey/:shareToken/public-submit')
+  submitPublicSurvey(@Param('shareToken') shareToken: string, @Body('answers') answers: Record<string, unknown>) {
+    return this.app.submitPublicSurvey(shareToken, answers || {});
+  }
+
   @UseGuards(FillAuthGuard)
   @Get('survey/:shareToken')
   getPublicSurvey(@Param('shareToken') shareToken: string, @Req() req: any) {

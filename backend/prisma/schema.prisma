@@ -82,6 +82,7 @@ model Survey {
   status     SurveyStatus @default(draft)
   shareToken String       @unique @map("share_token") @db.VarChar(64)
   isDeleted  Boolean      @default(false) @map("is_deleted")
+  publicFill Boolean      @default(false) @map("public_fill")
   createdBy  Int          @map("created_by") @db.UnsignedInt
   folderId   Int?         @map("folder_id") @db.UnsignedInt
   createdAt  DateTime     @default(now()) @map("created_at")

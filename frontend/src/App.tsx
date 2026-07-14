@@ -120,6 +120,7 @@ type Survey = {
   schemaJson: SurveySchema;
   createdAt: string;
   folderId?: number | null;
+  publicFill?: boolean;
 };
 
 type SurveyFolder = {
@@ -632,7 +633,7 @@ function SurveyList() {
           dataSource={data}
           columns={[
             { title: '问卷名称', dataIndex: 'title' },
-            { title: '类型', dataIndex: 'type', render: (v: SurveyKind) => <Tag color={surveyTypeColor(v)}>{surveyTypeLabel(v)}</Tag> },
+            { title: '类型', dataIndex: 'type', render: (v: SurveyKind, row: Survey) => (<Space size={4}><Tag color={surveyTypeColor(v)}>{surveyTypeLabel(v)}</Tag>{row.publicFill && <Tag color="volcano">免登录</Tag>}</Space>) },
             {
               title: '启用状态', dataIndex: 'status',
               render: (_: unknown, row: Survey) => (
@@ -648,7 +649,7 @@ function SurveyList() {
                   <Button icon={<LinkOutlined />} onClick={() => navigate(`/surveys/${row.id}/share`)}>分享</Button>
                   <Button icon={<EyeOutlined />} onClick={() => navigate(`/surveys/${row.id}/responses`)}>数据</Button>
                   <Button icon={<DownloadOutlined />} onClick={() => { setExportRange(null); setExportModal({ open: true, surveyId: row.id, surveyTitle: row.title }); }}>导出 CSV</Button>
-                  {row.type !== 'promotional_document' && (
+                  {row.type !== 'promotional_document' && !row.publicFill && (
                     <Button icon={<BarChartOutlined />} onClick={() => navigate(`/surveys/${row.id}/summary`)}>数据汇总</Button>
                   )}
                   <Button onClick={() => { setMoveTarget(undefined); setMoveModal({ open: true, survey: row }); }}>移动</Button>
@@ -712,7 +713,7 @@ function SurveyEditor() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { message } = AntApp.useApp();
-  const [form] = Form.useForm<{ title: string; type: SurveyKind }>();
+  const [form] = Form.useForm<{ title: string; type: SurveyKind; publicFill?: boolean }>();
   const surveyType = Form.useWatch('type', form) || 'assessment';
   const surveyTitle = Form.useWatch('title', form);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -737,7 +738,7 @@ function SurveyEditor() {
   useEffect(() => {
     if (!id) return;
     http.get(`/admin/surveys/${id}`).then(({ data }: { data: Survey }) => {
-      form.setFieldsValue({ title: data.title, type: data.type });
+      form.setFieldsValue({ title: data.title, type: data.type, publicFill: data.publicFill });
       setQuestions(data.schemaJson?.questions || []);
       setActiveId(data.schemaJson?.questions?.[0]?.id);
       setContentHtml(data.schemaJson?.contentHtml || '');
@@ -898,6 +899,16 @@ function SurveyEditor() {
               <Form.Item name="type" label="类型标签" rules={[{ required: true, message: '请选择类型标签' }]}>
                 <Select options={surveyTypeOptions} />
               </Form.Item>
+              {(surveyType === 'assessment' || surveyType === 'case_collection') && (
+                <Form.Item
+                  name="publicFill"
+                  label="免登录填写（外部问卷）"
+                  valuePropName="checked"
+                  tooltip="开启后，发布的问卷任何人凭链接直接填写，无需企业微信登录；此时不适用白名单。默认关闭（走企微登录）。"
+                >
+                  <Switch checkedChildren="免登录" unCheckedChildren="需登录" />
+                </Form.Item>
+              )}
             </Form>
           </Card>
 
@@ -1846,18 +1857,39 @@ function ResponsesPage() {
 
   const questions = (survey?.schemaJson?.questions || []).filter((question) => question.type !== 'description');
 
+  // 免登录（外部）问卷提交人匿名，按提交时间先后编号：外部填写 #1、#2…
+  const extIndexMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    let n = 0;
+    [...rows]
+      .sort((a, b) => new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime())
+      .forEach((r) => {
+        if (typeof r.wecomUserid === 'string' && r.wecomUserid.startsWith('ext-') && !(r.wecomUserid in map)) {
+          n += 1;
+          map[r.wecomUserid] = n;
+        }
+      });
+    return map;
+  }, [rows]);
+  const submitterLabel = (row: any) =>
+    row.wecomUser?.name ||
+    (typeof row.wecomUserid === 'string' && row.wecomUserid.startsWith('ext-')
+      ? `外部填写 #${extIndexMap[row.wecomUserid] ?? '-'}`
+      : row.wecomUserid);
+
   return (
     <Card title="提交记录">
       <Table
         className="responses-table"
         rowKey="id"
         dataSource={rows}
+        footer={() => `共 ${rows.length} 份提交`}
         rowClassName={(row) => (active?.id === row.id ? 'response-row-active' : '')}
         onRow={(row) => ({
           onClick: () => selectResponse(row),
         })}
         columns={[
-          { title: '提交人', render: (_: unknown, row: any) => row.wecomUser?.name || row.wecomUserid },
+          { title: '提交人', render: (_: unknown, row: any) => submitterLabel(row) },
           { title: '提交时间', dataIndex: 'submittedAt', render: (value: string) => new Date(value).toLocaleString() },
           { title: '评分', render: (_: unknown, row: any) => row.comment?.score || '-' },
           {
@@ -1936,7 +1968,8 @@ function ResponsesPage() {
 }
 
 function ResponseSubmitterInfo({ response }: { response: any }) {
-  const name = response.wecomUser?.name || response.wecomUserid || '未知用户';
+  const isExternal = typeof response.wecomUserid === 'string' && response.wecomUserid.startsWith('ext-');
+  const name = response.wecomUser?.name || (isExternal ? '外部填写（匿名）' : response.wecomUserid) || '未知用户';
   const initial = String(name).trim().charAt(0) || '?';
 
   return (
@@ -2769,6 +2802,7 @@ function FillPage() {
   const [submitting, setSubmitting] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
   const [editMode, setEditMode] = useState(false);
+  const [publicDone, setPublicDone] = useState(false);
 
   useEffect(() => {
     // 1. 从 URL 提取 fill_token / auth_error（OAuth 回调带回来的）
@@ -2857,6 +2891,32 @@ function FillPage() {
   const bannerTag =
     ({ assessment: '问卷考核', case_collection: '案例收集', promotional_document: '宣传文档' } as Record<string, string>)[survey.type] || '问卷';
 
+  // 免登录（外部）问卷提交成功页：匿名不限次，可再填一份
+  if (survey.publicFill && publicDone) {
+    return (
+      <div className="fill-page">
+        <div className="fill-banner">
+          <div className="fill-banner-tag">{bannerTag}</div>
+          <div className="fill-banner-title">{survey.title}</div>
+        </div>
+        <div className="fill-body">
+          <div className="fill-done-card">
+            <div className="fill-done-icon">✓</div>
+            <div className="fill-done-title">提交成功，感谢你的参与</div>
+            <Button
+              block
+              size="large"
+              className="fill-submit-btn fill-edit-btn"
+              onClick={() => { setPublicDone(false); window.scrollTo(0, 0); }}
+            >
+              再填一份
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // 已提交 + 非编辑态 → 展示「已完成」页（含"修改问卷（仅限一次）"）
   const submission = survey.submission;
   if (submission?.submitted && !editMode) {
@@ -2905,6 +2965,14 @@ function FillPage() {
 
     setSubmitting(true);
     try {
+      // 免登录（外部）问卷：走公开提交接口，匿名不限次，提交后显示成功页
+      if (survey.publicFill) {
+        await fillHttp.post(`/survey/${shareToken}/public-submit`, { answers });
+        setAnswers({});
+        setPublicDone(true);
+        window.scrollTo(0, 0);
+        return;
+      }
       await fillHttp.post(`/survey/${shareToken}/submit`, { answers });
       // 重新拉取问卷状态，回到「已完成」页（修改机会按新状态展示/隐藏）
       const { data } = await fillHttp.get(`/survey/${shareToken}`);
