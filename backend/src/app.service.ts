@@ -788,8 +788,9 @@ export class AppService {
     const contacts = await this.prisma.contact.findMany();
     const contactMap = new Map(contacts.map((item) => [item.name, item]));
     const questions = ((survey.schemaJson as SurveySchema).questions || []) as SurveyQuestion[];
-    // 图片/附件导出为完整可点击网址：站点域名从配置读取，默认 hr.mmcb.top
-    const baseUrl = (process.env.FRONTEND_ORIGIN || 'https://hr.mmcb.top').replace(/\/$/, '');
+    // 图片/附件导出为完整可点击网址：站点域名用专用变量 PUBLIC_BASE_URL，默认 hr.mmcb.top
+    // （不复用 FRONTEND_ORIGIN，避免开发环境把 localhost 拼进导出链接）
+    const baseUrl = (process.env.PUBLIC_BASE_URL || 'https://hr.mmcb.top').replace(/\/$/, '');
     const rows = responses.map((item: any) => {
       const name = item.wecomUser?.name || '';
       const contact = contactMap.get(name);
