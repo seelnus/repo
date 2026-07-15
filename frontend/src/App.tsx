@@ -2963,6 +2963,23 @@ function FillPage() {
   async function submit() {
     if (submitting) return;
 
+    // 选了「其他」必须填写说明，否则阻止提交并提示
+    const OTHER_PREFIX = '__other__:';
+    const emptyOther = visibleQuestions.find((q: Question) => {
+      const v = answers[q.id];
+      if (q.type === 'radio') {
+        return typeof v === 'string' && v.startsWith(OTHER_PREFIX) && v.slice(OTHER_PREFIX.length).trim() === '';
+      }
+      if (q.type === 'checkbox') {
+        return Array.isArray(v) && v.some((x) => typeof x === 'string' && x.startsWith(OTHER_PREFIX) && x.slice(OTHER_PREFIX.length).trim() === '');
+      }
+      return false;
+    });
+    if (emptyOther) {
+      message.error(`请填写"其他"选项的说明：${emptyOther.label || ''}`);
+      return;
+    }
+
     setSubmitting(true);
     try {
       // 免登录（外部）问卷：走公开提交接口，匿名不限次，提交后显示成功页

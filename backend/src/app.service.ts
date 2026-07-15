@@ -788,6 +788,8 @@ export class AppService {
     const contacts = await this.prisma.contact.findMany();
     const contactMap = new Map(contacts.map((item) => [item.name, item]));
     const questions = ((survey.schemaJson as SurveySchema).questions || []) as SurveyQuestion[];
+    // 图片/附件导出为完整可点击网址：站点域名从配置读取，默认 hr.mmcb.top
+    const baseUrl = (process.env.FRONTEND_ORIGIN || 'https://hr.mmcb.top').replace(/\/$/, '');
     const rows = responses.map((item: any) => {
       const name = item.wecomUser?.name || '';
       const contact = contactMap.get(name);
@@ -803,7 +805,7 @@ export class AppService {
         qNo++;
         const value = (item.answersJson || {})[question.id];
         const colKey = `Q${qNo}_${question.label}`;
-        base[colKey] = Array.isArray(value) ? value.join('、') : value || '';
+        base[colKey] = this.formatAnswerForExport(question, value, baseUrl);
       }
       base.点评内容 = item.comment?.comment || '';
       base.评分 = item.comment?.score || '';
@@ -839,6 +841,32 @@ export class AppService {
     };
   }
 
+  // 「其他」选项答案的存储前缀：值形如 __other__:<用户填写的说明>
+  private readonly OTHER_PREFIX = '__other__:';
+
+  // 是否为「选了其他但说明为空」
+  private isEmptyOther(value: unknown): boolean {
+    return typeof value === 'string' && value.startsWith(this.OTHER_PREFIX) && value.slice(this.OTHER_PREFIX.length).trim() === '';
+  }
+
+  // 导出时格式化单个答案：其他 → 「其他：xxx」；图片/附件 → 拼站点域名的完整可点击网址
+  private formatAnswerForExport(question: SurveyQuestion, value: unknown, baseUrl: string): string {
+    if (value === undefined || value === null) return '';
+    const fmtOne = (v: unknown): string => {
+      if (typeof v !== 'string') return String(v);
+      if (v.startsWith(this.OTHER_PREFIX)) {
+        const text = v.slice(this.OTHER_PREFIX.length).trim();
+        return text ? `其他：${text}` : '其他';
+      }
+      if (question.type === 'file' && v.startsWith('/uploads/')) {
+        return `${baseUrl}${v}`;
+      }
+      return v;
+    };
+    if (Array.isArray(value)) return value.map(fmtOne).join('、');
+    return fmtOne(value);
+  }
+
   private validateAnswers(schema: SurveySchema, answers: Record<string, unknown>) {
     for (const question of schema.questions || []) {
       if (!this.isVisible(question, answers)) continue;
@@ -849,6 +877,13 @@ export class AppService {
         (value === undefined || value === null || value === '' || (Array.isArray(value) && value.length === 0))
       ) {
         throw new BadRequestException(`请填写：${question.label}`);
+      }
+      // 选了「其他」就必须填写说明（无论该题是否必填）
+      if (question.type === 'radio' && this.isEmptyOther(value)) {
+        throw new BadRequestException(`请填写"其他"选项的说明：${question.label}`);
+      }
+      if (question.type === 'checkbox' && Array.isArray(value) && value.some((item) => this.isEmptyOther(item))) {
+        throw new BadRequestException(`请填写"其他"选项的说明：${question.label}`);
       }
       if (question.type === 'rating' && value !== undefined && value !== null && value !== '') {
         const score = Number(value);
