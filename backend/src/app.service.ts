@@ -23,6 +23,17 @@ interface FillUser {
 
 @Injectable()
 export class AppService {
+  private readonly exportDateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  });
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
@@ -765,13 +776,12 @@ export class AppService {
 
   async exportSurveySummary(surveyId: number) {
     const data = await this.getSurveySummary(surveyId);
-    const fmt = (t: any) => (t ? new Date(t).toLocaleString('zh-CN') : '');
     const rosterRows = data.rows.map((r: any) => ({
       姓名: r.name,
       部门: r.department || '',
       工号: r.jobNo || '',
       填写情况: r.submitted ? '已填' : '未填',
-      填写时间: fmt(r.filledAt),
+      填写时间: this.formatDateTimeForExport(r.filledAt),
       是否修改: r.submitted ? (r.edited ? '是' : '否') : '',
     }));
     const outsiderRows = data.outsiders.map((o: any) => ({
@@ -779,7 +789,7 @@ export class AppService {
       部门: '（名单外）',
       工号: '',
       填写情况: '已填',
-      填写时间: fmt(o.filledAt),
+      填写时间: this.formatDateTimeForExport(o.filledAt),
       是否修改: o.edited ? '是' : '否',
     }));
     return stringify([...rosterRows, ...outsiderRows], { header: true, bom: true });
@@ -848,7 +858,7 @@ export class AppService {
         提交人企微姓名: name,
         关联联系人工号: contact?.jobNo || '',
         关联联系人部门: contact?.department || '',
-        提交时间: item.submittedAt.toISOString(),
+        提交时间: this.formatDateTimeForExport(item.submittedAt),
       };
       let qNo = 0;
       for (const question of questions) {
@@ -863,6 +873,15 @@ export class AppService {
       return base;
     });
     return stringify(rows, { header: true, bom: true });
+  }
+
+  private formatDateTimeForExport(value: Date | string | null | undefined): string {
+    if (!value) return '';
+    const parts: Record<string, string> = {};
+    for (const part of this.exportDateTimeFormatter.formatToParts(new Date(value))) {
+      if (part.type !== 'literal') parts[part.type] = part.value;
+    }
+    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
   }
 
   private normalizeSchema(schemaJson: SurveySchema | undefined, surveyType: SurveyType): SurveySchema {
