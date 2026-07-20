@@ -337,6 +337,7 @@ export class AppService {
           status: SurveyStatus.draft,
           shareToken: randomBytes(16).toString('hex'),
           publicFill: this.resolvePublicFill(surveyType, data.publicFill),
+          allowMultipleSubmissions: this.resolveAllowMultipleSubmissions(surveyType, data.allowMultipleSubmissions),
           createdBy: adminId,
         },
       });
@@ -355,6 +356,7 @@ export class AppService {
           type: data.type,
           schemaJson: this.normalizeSchema(data.schemaJson, data.type),
           publicFill: this.resolvePublicFill(data.type, data.publicFill),
+          allowMultipleSubmissions: this.resolveAllowMultipleSubmissions(data.type, data.allowMultipleSubmissions),
         },
       });
     } catch (error) {
@@ -366,6 +368,11 @@ export class AppService {
   private resolvePublicFill(type: SurveyType | undefined, publicFill: unknown) {
     const allowed = type === SurveyType.assessment || type === SurveyType.case_collection;
     return allowed ? Boolean(publicFill) : false;
+  }
+
+  private resolveAllowMultipleSubmissions(type: SurveyType | undefined, allowMultipleSubmissions: unknown) {
+    const allowed = type === SurveyType.assessment || type === SurveyType.case_collection;
+    return allowed ? Boolean(allowMultipleSubmissions) : false;
   }
 
   async publishSurvey(id: number) {
@@ -460,14 +467,22 @@ export class AppService {
       orderBy: [{ updatedAt: 'desc' }, { submittedAt: 'desc' }],
     });
 
-    const filledSurveyIds = new Set<number>();
-    const filled: any[] = [];
+    const responsesBySurvey = new Map<number, typeof responses>();
     for (const r of responses) {
       const s = r.survey;
       if (!s || s.isDeleted || s.type === SurveyType.promotional_document) continue;
-      if (filledSurveyIds.has(s.id)) continue; // 每卷仅取最新一条
-      filledSurveyIds.add(s.id);
-      const edited = r.submitCount >= 2;
+      const group = responsesBySurvey.get(s.id) || [];
+      group.push(r);
+      responsesBySurvey.set(s.id, group);
+    }
+
+    const filledSurveyIds = new Set(responsesBySurvey.keys());
+    const filled: any[] = [];
+    for (const surveyResponses of responsesBySurvey.values()) {
+      const r = surveyResponses[0];
+      const s = r.survey;
+      const allowMultipleSubmissions = s.allowMultipleSubmissions;
+      const edited = !allowMultipleSubmissions && r.submitCount >= 2;
       filled.push({
         id: s.id,
         shareToken: s.shareToken,
@@ -475,7 +490,9 @@ export class AppService {
         type: s.type,
         status: s.status,
         submitCount: r.submitCount,
-        canEdit: r.submitCount < 2,
+        submissionCount: surveyResponses.length,
+        allowMultipleSubmissions,
+        canEdit: !allowMultipleSubmissions && r.submitCount < 2,
         finishedAt: edited ? r.updatedAt : r.submittedAt,
       });
     }
@@ -537,7 +554,16 @@ export class AppService {
 
     const currentUser = { wecomUserid: fillUser.wecomUserid, name: fillUser.name };
     const existing = await this.findOwnResponse(survey.id, fillUser.wecomUserid);
-    const submission = existing
+    const submissionCount = survey.allowMultipleSubmissions
+      ? await this.prisma.surveyResponse.count({
+          where: { surveyId: survey.id, wecomUserid: fillUser.wecomUserid, rateeContactId: null },
+        })
+      : existing
+        ? 1
+        : 0;
+    const submission = survey.allowMultipleSubmissions
+      ? { submitted: false, canEdit: false, submitCount: 0, submissionCount, answers: null, submittedAt: null, updatedAt: null }
+      : existing
       ? {
           submitted: true,
           canEdit: existing.submitCount < 2, // 还剩一次修改机会
@@ -556,6 +582,17 @@ export class AppService {
       throw new BadRequestException('宣传文档类不支持提交答卷');
     }
     this.validateAnswers(survey.schemaJson as SurveySchema, answersJson);
+
+    if (survey.allowMultipleSubmissions) {
+      return this.prisma.surveyResponse.create({
+        data: {
+          surveyId: survey.id,
+          wecomUserid: fillUser.wecomUserid,
+          answersJson: answersJson as Prisma.InputJsonValue,
+          submitCount: 1,
+        },
+      });
+    }
 
     const existing = await this.findOwnResponse(survey.id, fillUser.wecomUserid);
 
@@ -631,8 +668,8 @@ export class AppService {
     // 最终提交时间：改过取 updatedAt，否则取 submittedAt（避免历史数据 updatedAt 被迁移回填干扰）
     const filledAtOf = (r: any) => (r.submitCount >= 2 ? r.updatedAt : r.submittedAt);
 
-    // 每个填写人姓名取最新一条（responses 已按 submittedAt desc）
-    const latestByName = new Map<string, any>();
+    // 同一填写人可能有多条独立答卷；人数统计去重，明细保留全部提交。
+    const responsesByName = new Map<string, any[]>();
     const noNameResponses: any[] = [];
     for (const r of responses) {
       const nm = nameByWecom.get(r.wecomUserid);
@@ -640,7 +677,9 @@ export class AppService {
         noNameResponses.push(r);
         continue;
       }
-      if (!latestByName.has(nm)) latestByName.set(nm, r);
+      const group = responsesByName.get(nm) || [];
+      group.push(r);
+      responsesByName.set(nm, group);
     }
 
     let rows: any[] = [];
@@ -648,36 +687,46 @@ export class AppService {
 
     if (hasWhitelist) {
       const consumed = new Set<string>();
-      rows = roster.map((c) => {
-        const r = latestByName.get(c.name);
-        if (r) consumed.add(c.name);
-        return {
+      rows = roster.flatMap((c) => {
+        const personResponses = responsesByName.get(c.name) || [];
+        if (personResponses.length === 0) {
+          return [{
+            contactId: c.id,
+            name: c.name,
+            department: c.department,
+            jobNo: c.jobNo,
+            submitted: false,
+            edited: false,
+            filledAt: null,
+            responseId: null,
+          }];
+        }
+        consumed.add(c.name);
+        return personResponses.map((r) => ({
           contactId: c.id,
           name: c.name,
           department: c.department,
           jobNo: c.jobNo,
           submitted: !!r,
-          edited: r ? r.submitCount >= 2 : false,
-          filledAt: r ? filledAtOf(r) : null,
-          responseId: r?.id ?? null,
-        };
+          edited: r.submitCount >= 2,
+          filledAt: filledAtOf(r),
+          responseId: r.id,
+        }));
       });
       // 名单外：填了但不在名册
-      for (const [nm, r] of latestByName) {
+      for (const [nm, personResponses] of responsesByName) {
         if (consumed.has(nm)) continue;
-        outsiders.push({ name: nm, wecomUserid: r.wecomUserid, filledAt: filledAtOf(r), responseId: r.id, edited: r.submitCount >= 2 });
+        for (const r of personResponses) {
+          outsiders.push({ name: nm, wecomUserid: r.wecomUserid, filledAt: filledAtOf(r), responseId: r.id, edited: r.submitCount >= 2 });
+        }
       }
       for (const r of noNameResponses) {
         outsiders.push({ name: null, wecomUserid: r.wecomUserid, filledAt: filledAtOf(r), responseId: r.id, edited: r.submitCount >= 2 });
       }
     } else {
-      // 无名册：仅展示已填写人（每个姓名一行，无企微姓名的用 wecomUserid 兜底）
-      const seen = new Set<string>();
+      // 无名册：展示全部独立提交，无企微姓名的用 wecomUserid 兜底。
       for (const r of responses) {
         const nm = nameByWecom.get(r.wecomUserid);
-        const key = nm ?? `wx:${r.wecomUserid}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
         rows.push({
           contactId: null,
           name: nm ?? r.wecomUserid,
@@ -699,8 +748,9 @@ export class AppService {
       return new Date(b.filledAt).getTime() - new Date(a.filledAt).getTime();
     });
 
-    const total = hasWhitelist ? roster.length : rows.length;
-    const submitted = rows.filter((r) => r.submitted).length;
+    const uniqueSubmitters = new Set(responses.map((r) => r.wecomUserid));
+    const total = hasWhitelist ? roster.length : uniqueSubmitters.size;
+    const submitted = hasWhitelist ? roster.filter((c) => responsesByName.has(c.name)).length : uniqueSubmitters.size;
     const unsubmitted = Math.max(0, total - submitted);
     const rate = total === 0 ? 1 : submitted / total;
 

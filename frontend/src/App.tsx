@@ -121,6 +121,7 @@ type Survey = {
   createdAt: string;
   folderId?: number | null;
   publicFill?: boolean;
+  allowMultipleSubmissions?: boolean;
 };
 
 type SurveyFolder = {
@@ -633,7 +634,7 @@ function SurveyList() {
           dataSource={data}
           columns={[
             { title: '问卷名称', dataIndex: 'title' },
-            { title: '类型', dataIndex: 'type', render: (v: SurveyKind, row: Survey) => (<Space size={4}><Tag color={surveyTypeColor(v)}>{surveyTypeLabel(v)}</Tag>{row.publicFill && <Tag color="volcano">免登录</Tag>}</Space>) },
+            { title: '类型', dataIndex: 'type', render: (v: SurveyKind, row: Survey) => (<Space size={4}><Tag color={surveyTypeColor(v)}>{surveyTypeLabel(v)}</Tag>{row.publicFill && <Tag color="volcano">免登录</Tag>}{!row.publicFill && row.allowMultipleSubmissions && <Tag color="blue">不限次</Tag>}</Space>) },
             {
               title: '启用状态', dataIndex: 'status',
               render: (_: unknown, row: Survey) => (
@@ -713,9 +714,10 @@ function SurveyEditor() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { message } = AntApp.useApp();
-  const [form] = Form.useForm<{ title: string; type: SurveyKind; publicFill?: boolean }>();
+  const [form] = Form.useForm<{ title: string; type: SurveyKind; publicFill?: boolean; allowMultipleSubmissions?: boolean }>();
   const surveyType = Form.useWatch('type', form) || 'assessment';
   const surveyTitle = Form.useWatch('title', form);
+  const publicFill = Form.useWatch('publicFill', form) || false;
   const [questions, setQuestions] = useState<Question[]>([]);
   const [activeId, setActiveId] = useState<string>();
   const [contentHtml, setContentHtml] = useState('');
@@ -738,7 +740,12 @@ function SurveyEditor() {
   useEffect(() => {
     if (!id) return;
     http.get(`/admin/surveys/${id}`).then(({ data }: { data: Survey }) => {
-      form.setFieldsValue({ title: data.title, type: data.type, publicFill: data.publicFill });
+      form.setFieldsValue({
+        title: data.title,
+        type: data.type,
+        publicFill: data.publicFill,
+        allowMultipleSubmissions: data.allowMultipleSubmissions,
+      });
       setQuestions(data.schemaJson?.questions || []);
       setActiveId(data.schemaJson?.questions?.[0]?.id);
       setContentHtml(data.schemaJson?.contentHtml || '');
@@ -900,14 +907,25 @@ function SurveyEditor() {
                 <Select options={surveyTypeOptions} />
               </Form.Item>
               {(surveyType === 'assessment' || surveyType === 'case_collection') && (
-                <Form.Item
-                  name="publicFill"
-                  label="免登录填写（外部问卷）"
-                  valuePropName="checked"
-                  tooltip="开启后，发布的问卷任何人凭链接直接填写，无需企业微信登录；此时不适用白名单。默认关闭（走企微登录）。"
-                >
-                  <Switch checkedChildren="免登录" unCheckedChildren="需登录" />
-                </Form.Item>
+                <>
+                  <Form.Item
+                    name="publicFill"
+                    label="免登录填写（外部问卷）"
+                    valuePropName="checked"
+                    tooltip="开启后，发布的问卷任何人凭链接直接填写，无需企业微信登录；此时不适用白名单。默认关闭（走企微登录）。"
+                  >
+                    <Switch checkedChildren="免登录" unCheckedChildren="需登录" />
+                  </Form.Item>
+                  <Form.Item
+                    name="allowMultipleSubmissions"
+                    label="不限制次数填写"
+                    valuePropName="checked"
+                    getValueProps={(value) => ({ checked: publicFill || Boolean(value) })}
+                    tooltip="开启后，已登录用户每次提交都会生成一份独立答卷，可继续重复填写。免登录问卷默认不限次数。"
+                  >
+                    <Switch disabled={publicFill} checkedChildren="不限次数" unCheckedChildren="限制次数" />
+                  </Form.Item>
+                </>
               )}
             </Form>
           </Card>
@@ -1774,7 +1792,7 @@ function SummaryPage() {
           <Button icon={<DownloadOutlined />} onClick={() => downloadFile(`/admin/surveys/${id}/summary/export`, `survey-${id}-roster.csv`)}>导出名册</Button>
         </div>
         <Table
-          rowKey={(row: any) => row.contactId ?? row.name}
+          rowKey={(row: any) => row.responseId ?? `unfilled-${row.contactId ?? row.name}`}
           loading={loading}
           dataSource={rows}
           pagination={false}
@@ -1811,7 +1829,7 @@ function SummaryPage() {
             style={{ marginTop: 16 }}
             type="warning"
             showIcon
-            message={`另有 ${data.outsiders.length} 位名单外人员提交了答卷（不计入完成率）`}
+            message={`另有 ${data.outsiders.length} 份名单外提交（不计入完成率）`}
             description={
               <Space direction="vertical" style={{ width: '100%' }}>
                 {data.outsiders.map((o: any, i: number) => (
@@ -2754,11 +2772,17 @@ function MySurveysPage() {
         <div className="my-card" key={s.id}>
           <div className="my-card-top">
             <span className="my-card-title">{s.title}</span>
-            <Tag color={s.canEdit ? 'orange' : 'green'}>{s.canEdit ? '可修改一次' : '已完成'}</Tag>
+            {s.allowMultipleSubmissions ? (
+              <Tag color="blue">已提交 {s.submissionCount} 次</Tag>
+            ) : (
+              <Tag color={s.canEdit ? 'orange' : 'green'}>{s.canEdit ? '可修改一次' : '已完成'}</Tag>
+            )}
           </div>
           <div className="my-card-foot">
             <span className="my-card-note">提交于 {new Date(s.finishedAt).toLocaleString()}</span>
-            <Button onClick={() => navigate(`/s/${s.shareToken}`)}>{s.canEdit ? '修改' : '查看'}</Button>
+            <Button onClick={() => navigate(`/s/${s.shareToken}`)}>
+              {s.allowMultipleSubmissions ? '再填一份' : s.canEdit ? '修改' : '查看'}
+            </Button>
           </div>
         </div>
       ))}
@@ -2802,7 +2826,7 @@ function FillPage() {
   const [submitting, setSubmitting] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
   const [editMode, setEditMode] = useState(false);
-  const [publicDone, setPublicDone] = useState(false);
+  const [repeatDone, setRepeatDone] = useState(false);
 
   useEffect(() => {
     // 1. 从 URL 提取 fill_token / auth_error（OAuth 回调带回来的）
@@ -2891,8 +2915,8 @@ function FillPage() {
   const bannerTag =
     ({ assessment: '问卷考核', case_collection: '案例收集', promotional_document: '宣传文档' } as Record<string, string>)[survey.type] || '问卷';
 
-  // 免登录（外部）问卷提交成功页：匿名不限次，可再填一份
-  if (survey.publicFill && publicDone) {
+  // 不限次问卷提交成功页：每次提交独立保存，可继续再填一份。
+  if ((survey.publicFill || survey.allowMultipleSubmissions) && repeatDone) {
     return (
       <div className="fill-page">
         <div className="fill-banner">
@@ -2907,7 +2931,7 @@ function FillPage() {
               block
               size="large"
               className="fill-submit-btn fill-edit-btn"
-              onClick={() => { setPublicDone(false); window.scrollTo(0, 0); }}
+              onClick={() => { setRepeatDone(false); window.scrollTo(0, 0); }}
             >
               再填一份
             </Button>
@@ -2986,11 +3010,17 @@ function FillPage() {
       if (survey.publicFill) {
         await fillHttp.post(`/survey/${shareToken}/public-submit`, { answers });
         setAnswers({});
-        setPublicDone(true);
+        setRepeatDone(true);
         window.scrollTo(0, 0);
         return;
       }
       await fillHttp.post(`/survey/${shareToken}/submit`, { answers });
+      if (survey.allowMultipleSubmissions) {
+        setAnswers({});
+        setRepeatDone(true);
+        window.scrollTo(0, 0);
+        return;
+      }
       // 重新拉取问卷状态，回到「已完成」页（修改机会按新状态展示/隐藏）
       const { data } = await fillHttp.get(`/survey/${shareToken}`);
       setSurvey(data);
