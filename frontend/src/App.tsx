@@ -2818,7 +2818,6 @@ function MySurveysPage() {
 
 function FillPage() {
   const { shareToken } = useParams();
-  const navigate = useNavigate();
   const { message } = AntApp.useApp();
   const [survey, setSurvey] = useState<any>();
   const [error, setError] = useState<string>();
