@@ -1,8 +1,24 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { Prisma } from '@prisma/client';
+import { Prisma, SurveyStatus, SurveyType } from '@prisma/client';
 import * as ExcelJS from 'exceljs';
+import { randomBytes } from 'crypto';
 import { PrismaService } from './prisma.service';
+import { calculateEmployeeScore } from './eval-scoring';
+import {
+  EVAL_CYCLE_STATUSES,
+  EvalAnswer,
+  EvalCycleStatus,
+  EvalResponseForScoring,
+  EvalTemplate,
+  normalizeEvalTemplate,
+} from './eval.types';
 
 // 填写端用户（由 FillAuthGuard 注入，sub = 联系人 id）
 export interface EvalFillUser {
@@ -65,16 +81,26 @@ export class EvalService {
 
   async devListContacts() {
     this.assertDevLoginAllowed();
-    const contacts = await this.prisma.contact.findMany({ orderBy: { id: 'asc' }, select: { id: true, name: true, department: true } });
+    const contacts = await this.prisma.contact.findMany({
+      orderBy: { id: 'asc' },
+      select: { id: true, name: true, department: true },
+    });
     return contacts;
   }
 
   async devFillLogin(contactId: number) {
     this.assertDevLoginAllowed();
-    const contact = await this.prisma.contact.findUnique({ where: { id: contactId } });
+    const contact = await this.prisma.contact.findUnique({
+      where: { id: contactId },
+    });
     if (!contact) throw new NotFoundException('联系人不存在');
     const token = this.jwt.sign(
-      { sub: contact.id, wecomUserid: `dev-${contact.id}`, name: contact.name, type: 'fill' },
+      {
+        sub: contact.id,
+        wecomUserid: `dev-${contact.id}`,
+        name: contact.name,
+        type: 'fill',
+      },
       { expiresIn: '24h' },
     );
     return { token, name: contact.name };
@@ -85,15 +111,27 @@ export class EvalService {
   async listCycles() {
     const cycles = await this.prisma.evalCycle.findMany({
       orderBy: { createdAt: 'desc' },
-      include: { _count: { select: { relations: true } } },
+      include: { _count: { select: { relations: true, participants: true } } },
     });
-    return cycles.map(({ _count, ...c }) => ({ ...c, relationCount: _count.relations }));
+    return cycles.map(({ _count, ...c }) => ({
+      ...c,
+      relationCount: _count.relations,
+      participantCount: _count.participants,
+    }));
   }
 
   async getCycle(id: number) {
-    const cycle = await this.prisma.evalCycle.findUnique({ where: { id } });
+    const cycle = await this.prisma.evalCycle.findUnique({
+      where: { id },
+      include: { _count: { select: { relations: true, participants: true } } },
+    });
     if (!cycle) throw new NotFoundException('评价批次不存在');
-    return cycle;
+    const { _count, ...value } = cycle;
+    return {
+      ...value,
+      relationCount: _count.relations,
+      participantCount: _count.participants,
+    };
   }
 
   async createCycle(adminId: number, data: any) {
@@ -102,35 +140,335 @@ export class EvalService {
     return this.prisma.evalCycle.create({
       data: {
         name,
-        scopeDepartment: data.scopeDepartment ? String(data.scopeDepartment) : null,
+        version: 2,
+        scopeDepartment: data.scopeDepartment
+          ? String(data.scopeDepartment)
+          : null,
         selfSurveyId: toIdOrNull(data.selfSurveyId),
         peerSurveyId: toIdOrNull(data.peerSurveyId),
         leaderSurveyId: toIdOrNull(data.leaderSurveyId),
+        templateSurveyId: toIdOrNull(data.templateSurveyId),
+        startAt: toDateOrNull(data.startAt),
+        endAt: toDateOrNull(data.endAt),
         createdBy: adminId,
       },
     });
   }
 
   async updateCycle(id: number, data: any) {
-    await this.getCycle(id);
+    const cycle = await this.getCycle(id);
+    const immutableChanged =
+      data.templateSurveyId !== undefined ||
+      data.startAt !== undefined ||
+      data.name !== undefined;
+    if (cycle.status !== 'draft' && immutableChanged)
+      throw new BadRequestException('已发布批次不能修改名称、模板和开始时间');
+    const status =
+      data.status === undefined
+        ? undefined
+        : (String(data.status) as EvalCycleStatus);
+    if (status && !EVAL_CYCLE_STATUSES.includes(status))
+      throw new BadRequestException('批次状态不合法');
+    if (cycle.version >= 2 && status && status !== cycle.status)
+      throw new BadRequestException(
+        '新版批次请使用发布、截止、锁定或归档操作变更状态',
+      );
+    const startAt =
+      data.startAt !== undefined ? toDateOrNull(data.startAt) : undefined;
+    const endAt =
+      data.endAt !== undefined ? toDateOrNull(data.endAt) : undefined;
+    const effectiveStart = startAt === undefined ? cycle.startAt : startAt;
+    const effectiveEnd = endAt === undefined ? cycle.endAt : endAt;
+    if (effectiveStart && effectiveEnd && effectiveStart >= effectiveEnd)
+      throw new BadRequestException('开始时间必须早于截止时间');
     return this.prisma.evalCycle.update({
       where: { id },
       data: {
         ...(data.name !== undefined ? { name: String(data.name).trim() } : {}),
-        ...(data.scopeDepartment !== undefined ? { scopeDepartment: data.scopeDepartment ? String(data.scopeDepartment) : null } : {}),
-        ...(data.selfSurveyId !== undefined ? { selfSurveyId: toIdOrNull(data.selfSurveyId) } : {}),
-        ...(data.peerSurveyId !== undefined ? { peerSurveyId: toIdOrNull(data.peerSurveyId) } : {}),
-        ...(data.leaderSurveyId !== undefined ? { leaderSurveyId: toIdOrNull(data.leaderSurveyId) } : {}),
-        ...(data.status !== undefined ? { status: String(data.status) } : {}),
+        ...(data.scopeDepartment !== undefined
+          ? {
+              scopeDepartment: data.scopeDepartment
+                ? String(data.scopeDepartment)
+                : null,
+            }
+          : {}),
+        ...(data.selfSurveyId !== undefined
+          ? { selfSurveyId: toIdOrNull(data.selfSurveyId) }
+          : {}),
+        ...(data.peerSurveyId !== undefined
+          ? { peerSurveyId: toIdOrNull(data.peerSurveyId) }
+          : {}),
+        ...(data.leaderSurveyId !== undefined
+          ? { leaderSurveyId: toIdOrNull(data.leaderSurveyId) }
+          : {}),
+        ...(data.templateSurveyId !== undefined
+          ? { templateSurveyId: toIdOrNull(data.templateSurveyId) }
+          : {}),
+        ...(startAt !== undefined ? { startAt } : {}),
+        ...(endAt !== undefined ? { endAt } : {}),
+        ...(status !== undefined ? { status } : {}),
       },
     });
   }
 
   async deleteCycle(id: number) {
-    await this.getCycle(id);
+    const cycle = await this.getCycle(id);
+    if (cycle.status !== 'draft')
+      throw new BadRequestException('只有草稿批次可以删除');
+    const submitted = await this.prisma.evalRelation.count({
+      where: { cycleId: id, responseId: { not: null } },
+    });
+    if (submitted) throw new BadRequestException('批次已有答卷，不能删除');
     // eval_relations 通过外键 onDelete: Cascade 一并删除
     await this.prisma.evalCycle.delete({ where: { id } });
     return { ok: true };
+  }
+
+  // ── 新版统一模板 ──
+
+  async listTemplates() {
+    return this.prisma.survey.findMany({
+      where: { type: SurveyType.evaluation, isDeleted: false },
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        schemaJson: true,
+        updatedAt: true,
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+  }
+
+  async createTemplate(adminId: number, data: any) {
+    const title = String(data?.title || '').trim();
+    if (!title) throw new BadRequestException('模板名称不能为空');
+    const schema = this.parseTemplate(data?.schemaJson);
+    return this.prisma.survey.create({
+      data: {
+        title,
+        type: SurveyType.evaluation,
+        status: SurveyStatus.draft,
+        schemaJson: schema as unknown as Prisma.InputJsonValue,
+        shareToken: randomBytes(16).toString('hex'),
+        createdBy: adminId,
+      },
+    });
+  }
+
+  async updateTemplate(id: number, data: any) {
+    const template = await this.getTemplate(id);
+    const title =
+      data.title === undefined
+        ? template.title
+        : String(data.title || '').trim();
+    if (!title) throw new BadRequestException('模板名称不能为空');
+    const schema =
+      data.schemaJson === undefined
+        ? template.schemaJson
+        : this.parseTemplate(data.schemaJson);
+    return this.prisma.survey.update({
+      where: { id },
+      data: { title, schemaJson: schema as Prisma.InputJsonValue },
+    });
+  }
+
+  private async getTemplate(id: number) {
+    const template = await this.prisma.survey.findFirst({
+      where: { id, type: SurveyType.evaluation, isDeleted: false },
+    });
+    if (!template) throw new NotFoundException('环评模板不存在');
+    return template;
+  }
+
+  private parseTemplate(value: unknown): EvalTemplate {
+    try {
+      return normalizeEvalTemplate(value);
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : '环评模板格式不正确',
+      );
+    }
+  }
+
+  // ── 新版参评人员快照 ──
+
+  async getParticipantCandidates() {
+    const contacts = await this.prisma.contact.findMany({
+      orderBy: [{ department: 'asc' }, { name: 'asc' }],
+    });
+    const departmentCounts = new Map<string, number>();
+    for (const contact of contacts) {
+      const department = contact.department?.trim() || '未分组';
+      departmentCounts.set(
+        department,
+        (departmentCounts.get(department) || 0) + 1,
+      );
+    }
+    return {
+      departments: Array.from(departmentCounts, ([name, count]) => ({
+        name,
+        count,
+      })),
+      contacts,
+    };
+  }
+
+  async listParticipants(cycleId: number) {
+    await this.getCycle(cycleId);
+    return this.prisma.evalCycleParticipant.findMany({
+      where: { cycleId },
+      orderBy: [{ groupName: 'asc' }, { nameSnapshot: 'asc' }],
+    });
+  }
+
+  async replaceParticipants(cycleId: number, data: any, adminId: number) {
+    const cycle = await this.requireDraftCycle(cycleId);
+    const contactIds = uniquePositiveIds(data?.contactIds || []);
+    if (!contactIds.length)
+      throw new BadRequestException('请至少选择一名参评人员');
+    const submitted = await this.prisma.evalRelation.count({
+      where: { cycleId, responseId: { not: null } },
+    });
+    if (submitted) throw new BadRequestException('已有答卷，不能替换参评人员');
+    const contacts = await this.prisma.contact.findMany({
+      where: { id: { in: contactIds } },
+    });
+    if (contacts.length !== contactIds.length)
+      throw new BadRequestException('部分联系人不存在，请刷新后重试');
+    const customGroups =
+      data?.groups && typeof data.groups === 'object'
+        ? (data.groups as Record<string, string>)
+        : {};
+    await this.prisma.$transaction(async (tx) => {
+      await tx.evalRelation.deleteMany({ where: { cycleId } });
+      await tx.evalCycleParticipant.deleteMany({ where: { cycleId } });
+      await tx.evalCycleParticipant.createMany({
+        data: contacts.map((contact) => {
+          const groupName =
+            String(
+              customGroups[String(contact.id)] ||
+                contact.department ||
+                '未分组',
+            ).trim() || '未分组';
+          return {
+            cycleId,
+            contactId: contact.id,
+            nameSnapshot: contact.name,
+            jobNoSnapshot: contact.jobNo,
+            departmentSnapshot: contact.department,
+            positionSnapshot: contact.position,
+            groupKey: groupName,
+            groupName,
+          };
+        }),
+      });
+      await tx.evalAuditLog.create({
+        data: {
+          cycleId,
+          action: 'replace_participants',
+          targetType: 'cycle_participants',
+          afterJson: { contactIds } as Prisma.InputJsonValue,
+          adminId,
+        },
+      });
+    });
+    return { cycleId: cycle.id, count: contacts.length };
+  }
+
+  async copyParticipants(
+    cycleId: number,
+    sourceCycleId: number,
+    adminId: number,
+  ) {
+    await this.requireDraftCycle(cycleId);
+    const source = await this.prisma.evalCycleParticipant.findMany({
+      where: { cycleId: sourceCycleId },
+    });
+    if (!source.length)
+      throw new BadRequestException('来源批次没有可复制的参评人员');
+    return this.replaceParticipants(
+      cycleId,
+      {
+        contactIds: source.map((participant) => participant.contactId),
+        groups: Object.fromEntries(
+          source.map((participant) => [
+            participant.contactId,
+            participant.groupName,
+          ]),
+        ),
+      },
+      adminId,
+    );
+  }
+
+  async updateParticipant(
+    cycleId: number,
+    participantId: number,
+    data: any,
+    adminId: number,
+  ) {
+    await this.requireDraftCycle(cycleId);
+    const participant = await this.prisma.evalCycleParticipant.findFirst({
+      where: { id: participantId, cycleId },
+    });
+    if (!participant) throw new NotFoundException('参评人员不存在');
+    const mode = data.mode === undefined ? participant.mode : String(data.mode);
+    if (!['normal', 'special'].includes(mode))
+      throw new BadRequestException('人员类型不合法');
+    const groupName =
+      data.groupName === undefined
+        ? participant.groupName
+        : String(data.groupName || '').trim();
+    if (!groupName) throw new BadRequestException('评价小组不能为空');
+    const updated = await this.prisma.evalCycleParticipant.update({
+      where: { id: participantId },
+      data: {
+        mode,
+        groupName,
+        groupKey: groupName,
+        ...(data.peerExempt !== undefined
+          ? { peerExempt: Boolean(data.peerExempt) }
+          : {}),
+        ...(data.exceptionReason !== undefined
+          ? {
+              exceptionReason:
+                String(data.exceptionReason || '').trim() || null,
+            }
+          : {}),
+      },
+    });
+    if (mode !== participant.mode) {
+      await this.prisma.evalRelation.deleteMany({
+        where: {
+          cycleId,
+          source: 'auto',
+          OR: [
+            { raterContactId: participant.contactId },
+            { rateeContactId: participant.contactId },
+          ],
+        },
+      });
+    }
+    await this.prisma.evalAuditLog.create({
+      data: {
+        cycleId,
+        action: 'update_participant',
+        targetType: 'participant',
+        targetId: String(participantId),
+        beforeJson: toJsonInput(participant),
+        afterJson: toJsonInput(updated),
+        adminId,
+      },
+    });
+    return updated;
+  }
+
+  private async requireDraftCycle(cycleId: number) {
+    const cycle = await this.getCycle(cycleId);
+    if (cycle.status !== 'draft')
+      throw new BadRequestException('只有草稿批次允许执行该操作');
+    return cycle;
   }
 
   // ── 关系自动生成 ──
@@ -141,7 +479,9 @@ export class EvalService {
    */
   async generateRelations(cycleId: number) {
     const cycle = await this.getCycle(cycleId);
-    if (!cycle.scopeDepartment) throw new BadRequestException('请先设置参评范围（部门/组）');
+    if (cycle.version >= 2) return this.generateV2Relations(cycleId);
+    if (!cycle.scopeDepartment)
+      throw new BadRequestException('请先设置参评范围（部门/组）');
     if (!cycle.selfSurveyId || !cycle.peerSurveyId) {
       throw new BadRequestException('请先绑定自评问卷和他评问卷');
     }
@@ -150,10 +490,17 @@ export class EvalService {
       where: { department: cycle.scopeDepartment },
       orderBy: { id: 'asc' },
     });
-    const leaderIds = new Set(members.filter((m) => isLeaderTag(m.tags)).map((m) => m.id));
+    const leaderIds = new Set(
+      members.filter((m) => isLeaderTag(m.tags)).map((m) => m.id),
+    );
     const memberIds = members.map((m) => m.id);
 
-    const rels = buildAutoRelations(memberIds, leaderIds, cycle.selfSurveyId, cycle.peerSurveyId);
+    const rels = buildAutoRelations(
+      memberIds,
+      leaderIds,
+      cycle.selfSurveyId,
+      cycle.peerSurveyId,
+    );
 
     await this.prisma.$transaction(async (tx) => {
       await tx.evalRelation.deleteMany({ where: { cycleId, source: 'auto' } });
@@ -178,8 +525,14 @@ export class EvalService {
 
     // 生成报告：把规则覆盖不到、需人工处理的显式列出来
     const warnings: string[] = [];
-    if (normalCount === 1) warnings.push('该组只有 1 名普通员工，无法互评，请人工配置（跨组/豁免/仅自评）');
-    if (normalCount === 0) warnings.push('该范围内没有普通员工（可能全是领导或范围为空），请检查参评范围与领导标记');
+    if (normalCount === 1)
+      warnings.push(
+        '该组只有 1 名普通员工，无法互评，请人工配置（跨组/豁免/仅自评）',
+      );
+    if (normalCount === 0)
+      warnings.push(
+        '该范围内没有普通员工（可能全是领导或范围为空），请检查参评范围与领导标记',
+      );
 
     return {
       cycleId,
@@ -195,15 +548,107 @@ export class EvalService {
     };
   }
 
+  private async generateV2Relations(cycleId: number) {
+    const cycle = await this.requireDraftCycle(cycleId);
+    if (!cycle.templateSurveyId)
+      throw new BadRequestException('请先选择统一环评模板');
+    await this.getTemplate(cycle.templateSurveyId);
+    const participants = await this.prisma.evalCycleParticipant.findMany({
+      where: { cycleId },
+      orderBy: { id: 'asc' },
+    });
+    if (!participants.length) throw new BadRequestException('请先确认参评人员');
+    if (participants.some((participant) => !participant.groupName.trim()))
+      throw new BadRequestException('所有参评人员必须设置评价小组');
+    const submitted = await this.prisma.evalRelation.count({
+      where: { cycleId, responseId: { not: null } },
+    });
+    if (submitted)
+      throw new BadRequestException('批次已有答卷，不能重新生成关系');
+
+    const groups = new Map<string, typeof participants>();
+    for (const participant of participants.filter(
+      (item) => item.mode === 'normal',
+    )) {
+      const rows = groups.get(participant.groupKey) || [];
+      rows.push(participant);
+      groups.set(participant.groupKey, rows);
+    }
+    const rels: AutoRelation[] = [];
+    const groupReports: Array<{
+      groupName: string;
+      normalCount: number;
+      relationCount: number;
+      warning?: string;
+    }> = [];
+    for (const [groupName, rows] of groups) {
+      const built = buildAutoRelations(
+        rows.map((row) => row.contactId),
+        new Set<number>(),
+        cycle.templateSurveyId,
+        cycle.templateSurveyId,
+      );
+      rels.push(...built);
+      groupReports.push({
+        groupName,
+        normalCount: rows.length,
+        relationCount: built.length,
+        ...(rows.length === 1
+          ? { warning: '单人组只有自评，请人工补配跨组评价或登记他评豁免' }
+          : {}),
+      });
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.evalRelation.deleteMany({ where: { cycleId, source: 'auto' } });
+      if (rels.length) {
+        await tx.evalRelation.createMany({
+          data: rels.map((relation) => ({
+            cycleId,
+            raterContactId: relation.rater,
+            rateeContactId: relation.ratee,
+            relationType: relation.type,
+            surveyId: cycle.templateSurveyId!,
+            source: 'auto',
+            status: 'pending',
+          })),
+          skipDuplicates: true,
+        });
+      }
+    });
+    return {
+      cycleId,
+      memberTotal: participants.length,
+      specialCount: participants.filter(
+        (participant) => participant.mode === 'special',
+      ).length,
+      normalCount: participants.filter(
+        (participant) => participant.mode === 'normal',
+      ).length,
+      generated: rels.length,
+      selfCount: rels.filter((relation) => relation.type === 'self').length,
+      peerCount: rels.filter((relation) => relation.type === 'peer').length,
+      groups: groupReports,
+      warnings: groupReports.flatMap((group) =>
+        group.warning ? [`${group.groupName}：${group.warning}`] : [],
+      ),
+    };
+  }
+
   // ── 复核列表 = 异常报告（实时聚合，不落快照）──
 
   async getReviewList(cycleId: number) {
     const cycle = await this.getCycle(cycleId);
-    const relations = await this.prisma.evalRelation.findMany({ where: { cycleId } });
+    if (cycle.version >= 2) return this.getV2ReviewList(cycleId);
+    const relations = await this.prisma.evalRelation.findMany({
+      where: { cycleId },
+    });
 
     // 行集合 = 参评范围成员 ∪ 关系里出现过的所有人（含人工配置到范围外的人）
     const scopeMembers = cycle.scopeDepartment
-      ? await this.prisma.contact.findMany({ where: { department: cycle.scopeDepartment } })
+      ? await this.prisma.contact.findMany({
+          where: { department: cycle.scopeDepartment },
+        })
       : [];
     const ids = new Set<number>();
     scopeMembers.forEach((m) => ids.add(m.id));
@@ -211,18 +656,36 @@ export class EvalService {
       ids.add(r.raterContactId);
       ids.add(r.rateeContactId);
     });
-    const contacts = await this.prisma.contact.findMany({ where: { id: { in: Array.from(ids) } } });
+    const contacts = await this.prisma.contact.findMany({
+      where: { id: { in: Array.from(ids) } },
+    });
     const contactMap = new Map(contacts.map((c) => [c.id, c]));
 
     const rows = Array.from(ids).map((id) => {
       const c = contactMap.get(id);
       const isLeader = isLeaderTag(c?.tags);
-      const involved = relations.filter((r) => r.raterContactId === id || r.rateeContactId === id);
-      const selfRel = relations.find((r) => r.relationType === 'self' && r.raterContactId === id && r.rateeContactId === id);
-      const ratedBy = relations.filter((r) => r.rateeContactId === id && r.raterContactId !== id); // 别人评他
-      const rating = relations.filter((r) => r.raterContactId === id && r.rateeContactId !== id); // 他评别人
+      const involved = relations.filter(
+        (r) => r.raterContactId === id || r.rateeContactId === id,
+      );
+      const selfRel = relations.find(
+        (r) =>
+          r.relationType === 'self' &&
+          r.raterContactId === id &&
+          r.rateeContactId === id,
+      );
+      const ratedBy = relations.filter(
+        (r) => r.rateeContactId === id && r.raterContactId !== id,
+      ); // 别人评他
+      const rating = relations.filter(
+        (r) => r.raterContactId === id && r.rateeContactId !== id,
+      ); // 他评别人
       const sources = new Set(involved.map((r) => r.source));
-      const source = involved.length === 0 ? 'none' : sources.size > 1 ? 'mixed' : Array.from(sources)[0];
+      const source =
+        involved.length === 0
+          ? 'none'
+          : sources.size > 1
+            ? 'mixed'
+            : Array.from(sources)[0];
 
       const anomalies: string[] = [];
       if (involved.length === 0) {
@@ -250,9 +713,16 @@ export class EvalService {
         status: anomalies.length ? '异常' : '完整',
       };
     });
-    rows.sort((a, b) => (a.status === b.status ? a.contactId - b.contactId : a.status === '异常' ? -1 : 1));
+    rows.sort((a, b) =>
+      a.status === b.status
+        ? a.contactId - b.contactId
+        : a.status === '异常'
+          ? -1
+          : 1,
+    );
 
-    const has = (t: string) => rows.filter((r) => r.anomalies.includes(t)).length;
+    const has = (t: string) =>
+      rows.filter((r) => r.anomalies.includes(t)).length;
     const summary = {
       total: rows.length,
       complete: rows.filter((r) => r.status === '完整').length,
@@ -268,18 +738,126 @@ export class EvalService {
     return { cycle, summary, rows };
   }
 
+  private async getV2ReviewList(cycleId: number) {
+    const cycle = await this.getCycle(cycleId);
+    const [participants, relations] = await Promise.all([
+      this.prisma.evalCycleParticipant.findMany({
+        where: { cycleId },
+        orderBy: [{ groupName: 'asc' }, { nameSnapshot: 'asc' }],
+      }),
+      this.prisma.evalRelation.findMany({ where: { cycleId } }),
+    ]);
+    const participantIds = new Set(
+      participants.map((participant) => participant.contactId),
+    );
+    const rows = participants.map((participant) => {
+      const selfRelation = relations.find(
+        (relation) =>
+          relation.relationType === 'self' &&
+          relation.raterContactId === participant.contactId &&
+          relation.rateeContactId === participant.contactId,
+      );
+      const received = relations.filter(
+        (relation) =>
+          relation.rateeContactId === participant.contactId &&
+          relation.status !== 'exempt',
+      );
+      const assigned = relations.filter(
+        (relation) =>
+          relation.raterContactId === participant.contactId &&
+          relation.status !== 'exempt',
+      );
+      const otherReceived = received.filter(
+        (relation) => relation.raterContactId !== participant.contactId,
+      );
+      const anomalies: string[] = [];
+      if (!participant.groupName.trim()) anomalies.push('未归组');
+      if (participant.mode === 'normal' && !selfRelation)
+        anomalies.push('未配自评');
+      if (!otherReceived.length && !participant.peerExempt)
+        anomalies.push(
+          participant.mode === 'special' ? '特殊人员待配' : '无人评价',
+        );
+      if (
+        !assigned.length &&
+        participant.mode === 'special' &&
+        !participant.exceptionReason
+      )
+        anomalies.push('特殊人员待配');
+      const outside = relations.some(
+        (relation) =>
+          (relation.raterContactId === participant.contactId ||
+            relation.rateeContactId === participant.contactId) &&
+          (!participantIds.has(relation.raterContactId) ||
+            !participantIds.has(relation.rateeContactId)),
+      );
+      if (outside) anomalies.push('关系指向非本批次人员');
+      return {
+        participantId: participant.id,
+        contactId: participant.contactId,
+        name: participant.nameSnapshot,
+        jobNo: participant.jobNoSnapshot,
+        department: participant.departmentSnapshot,
+        groupName: participant.groupName,
+        mode: participant.mode,
+        peerExempt: participant.peerExempt,
+        hasSelf: !!selfRelation,
+        selfSubmitted: !!selfRelation?.responseId,
+        ratedByCount: received.length,
+        ratedBySubmitted: received.filter(
+          (relation) => relation.responseId && relation.status === 'submitted',
+        ).length,
+        ratingCount: assigned.length,
+        ratingSubmitted: assigned.filter(
+          (relation) => relation.responseId && relation.status === 'submitted',
+        ).length,
+        anomalies: Array.from(new Set(anomalies)),
+        status: anomalies.length ? '异常' : '完整',
+      };
+    });
+    const summary = {
+      total: rows.length,
+      complete: rows.filter((row) => row.status === '完整').length,
+      anomaly: rows.filter((row) => row.status === '异常').length,
+      byType: {
+        未配自评: rows.filter((row) => row.anomalies.includes('未配自评'))
+          .length,
+        无人评价: rows.filter((row) => row.anomalies.includes('无人评价'))
+          .length,
+        特殊人员待配: rows.filter((row) =>
+          row.anomalies.includes('特殊人员待配'),
+        ).length,
+        未归组: rows.filter((row) => row.anomalies.includes('未归组')).length,
+        关系指向非本批次人员: rows.filter((row) =>
+          row.anomalies.includes('关系指向非本批次人员'),
+        ).length,
+      },
+    };
+    return { cycle, summary, rows };
+  }
+
   // ── 关系明细 / 人工配置（领导 + 异常补配）──
 
   async listRelations(cycleId: number) {
-    await this.getCycle(cycleId);
-    const relations = await this.prisma.evalRelation.findMany({ where: { cycleId }, orderBy: { id: 'asc' } });
+    const cycle = await this.getCycle(cycleId);
+    const relations = await this.prisma.evalRelation.findMany({
+      where: { cycleId },
+      orderBy: { id: 'asc' },
+    });
     const ids = new Set<number>();
     relations.forEach((r) => {
       ids.add(r.raterContactId);
       ids.add(r.rateeContactId);
     });
-    const contacts = await this.prisma.contact.findMany({ where: { id: { in: Array.from(ids) } } });
+    const [contacts, participants] = await Promise.all([
+      this.prisma.contact.findMany({ where: { id: { in: Array.from(ids) } } }),
+      cycle.version >= 2
+        ? this.prisma.evalCycleParticipant.findMany({ where: { cycleId } })
+        : Promise.resolve([]),
+    ]);
     const nameOf = new Map(contacts.map((c) => [c.id, c.name]));
+    for (const participant of participants)
+      nameOf.set(participant.contactId, participant.nameSnapshot);
     return relations.map((r) => ({
       ...r,
       raterName: nameOf.get(r.raterContactId) ?? `#${r.raterContactId}`,
@@ -290,22 +868,49 @@ export class EvalService {
 
   async addManualRelation(cycleId: number, data: any) {
     const cycle = await this.getCycle(cycleId);
+    if (!['draft', 'published'].includes(cycle.status))
+      throw new BadRequestException('当前批次状态不能新增关系');
     const rater = Number(data?.raterContactId);
     const ratee = Number(data?.rateeContactId);
     const relationType = String(data?.relationType || '');
-    if (!['self', 'peer', 'leader'].includes(relationType)) throw new BadRequestException('关系类型必须是 self/peer/leader');
-    if (!Number.isInteger(rater) || rater <= 0 || !Number.isInteger(ratee) || ratee <= 0) {
+    if (!['self', 'peer', 'leader'].includes(relationType))
+      throw new BadRequestException('关系类型必须是 self/peer/leader');
+    if (
+      !Number.isInteger(rater) ||
+      rater <= 0 ||
+      !Number.isInteger(ratee) ||
+      ratee <= 0
+    ) {
       throw new BadRequestException('评价人/被评人不合法');
     }
-    if (relationType === 'self' && rater !== ratee) throw new BadRequestException('自评的评价人和被评人必须是同一人');
+    if (relationType === 'self' && rater !== ratee)
+      throw new BadRequestException('自评的评价人和被评人必须是同一人');
 
     // 问卷模板：优先用传入的，否则按关系类型取批次默认模板
-    const surveyId = toIdOrNull(data?.surveyId)
-      ?? (relationType === 'self' ? cycle.selfSurveyId : relationType === 'leader' ? cycle.leaderSurveyId : cycle.peerSurveyId);
-    if (!surveyId) throw new BadRequestException('未指定问卷模板，且批次未绑定该类型的默认模板');
+    const surveyId =
+      cycle.version >= 2
+        ? cycle.templateSurveyId
+        : (toIdOrNull(data?.surveyId) ??
+          (relationType === 'self'
+            ? cycle.selfSurveyId
+            : relationType === 'leader'
+              ? cycle.leaderSurveyId
+              : cycle.peerSurveyId));
+    if (!surveyId)
+      throw new BadRequestException(
+        '未指定问卷模板，且批次未绑定该类型的默认模板',
+      );
 
-    const count = await this.prisma.contact.count({ where: { id: { in: [rater, ratee] } } });
-    if (count !== new Set([rater, ratee]).size) throw new BadRequestException('评价人或被评人不存在');
+    const count =
+      cycle.version >= 2
+        ? await this.prisma.evalCycleParticipant.count({
+            where: { cycleId, contactId: { in: [rater, ratee] } },
+          })
+        : await this.prisma.contact.count({
+            where: { id: { in: [rater, ratee] } },
+          });
+    if (count !== new Set([rater, ratee]).size)
+      throw new BadRequestException('评价人或被评人不存在');
 
     try {
       return await this.prisma.evalRelation.create({
@@ -319,48 +924,632 @@ export class EvalService {
         },
       });
     } catch (e) {
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-        throw new ConflictException('该评价关系已存在（同一批次内评价人+被评人唯一）');
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002'
+      ) {
+        throw new ConflictException(
+          '该评价关系已存在（同一批次内评价人+被评人唯一）',
+        );
       }
       throw e;
     }
   }
 
   async deleteRelation(relationId: number) {
-    const rel = await this.prisma.evalRelation.findUnique({ where: { id: relationId } });
+    const rel = await this.prisma.evalRelation.findUnique({
+      where: { id: relationId },
+    });
     if (!rel) throw new NotFoundException('评价关系不存在');
-    if (rel.responseId) throw new BadRequestException('该关系已有人提交答卷，不能删除');
+    const cycle = await this.getCycle(rel.cycleId);
+    if (cycle.status !== 'draft')
+      throw new BadRequestException('只有草稿批次可以删除评价关系');
+    if (rel.responseId)
+      throw new BadRequestException('该关系已有人提交答卷，不能删除');
     await this.prisma.evalRelation.delete({ where: { id: relationId } });
     return { ok: true };
+  }
+
+  async exemptRelation(relationId: number, reason: string, adminId: number) {
+    const relation = await this.prisma.evalRelation.findUnique({
+      where: { id: relationId },
+    });
+    if (!relation) throw new NotFoundException('评价关系不存在');
+    const cycle = await this.getCycle(relation.cycleId);
+    if (!['draft', 'published', 'closed'].includes(cycle.status))
+      throw new BadRequestException('当前批次状态不能登记豁免');
+    if (relation.responseId)
+      throw new BadRequestException('已有答卷的关系不能豁免');
+    const text = String(reason || '').trim();
+    if (!text) throw new BadRequestException('请填写豁免原因');
+    const updated = await this.prisma.evalRelation.update({
+      where: { id: relationId },
+      data: { status: 'exempt', exceptionReason: text },
+    });
+    await this.writeAudit(
+      relation.cycleId,
+      adminId,
+      'exempt_relation',
+      'relation',
+      relationId,
+      relation,
+      updated,
+      text,
+    );
+    return updated;
+  }
+
+  // ── 生命周期、进度与结果 ──
+
+  async publishCycle(cycleId: number, adminId: number) {
+    const cycle = await this.requireDraftCycle(cycleId);
+    if (!cycle.templateSurveyId)
+      throw new BadRequestException('请先选择统一环评模板');
+    if (!cycle.startAt || !cycle.endAt || cycle.startAt >= cycle.endAt)
+      throw new BadRequestException('请设置合法的开始和截止时间');
+    const templateRow = await this.getTemplate(cycle.templateSurveyId);
+    const template = this.parseTemplate(templateRow.schemaJson);
+    if (!template.questions.some((question) => question.countInScore))
+      throw new BadRequestException('模板至少需要一道计分题');
+    const participantCount = await this.prisma.evalCycleParticipant.count({
+      where: { cycleId },
+    });
+    if (!participantCount) throw new BadRequestException('请先确认参评人员');
+    const relationCount = await this.prisma.evalRelation.count({
+      where: { cycleId, status: { not: 'exempt' } },
+    });
+    if (!relationCount) throw new BadRequestException('请先生成或配置评价关系');
+    const review = await this.getV2ReviewList(cycleId);
+    if (review.summary.anomaly)
+      throw new BadRequestException(
+        `还有 ${review.summary.anomaly} 名参评人员存在关系异常，请先处理或豁免`,
+      );
+    const updated = await this.prisma.evalCycle.update({
+      where: { id: cycleId },
+      data: {
+        status: 'published',
+        templateSnapshotJson: template as unknown as Prisma.InputJsonValue,
+      },
+    });
+    await this.writeAudit(
+      cycleId,
+      adminId,
+      'publish_cycle',
+      'cycle',
+      cycleId,
+      cycle,
+      updated,
+    );
+    return updated;
+  }
+
+  async closeCycle(cycleId: number, adminId: number) {
+    const cycle = await this.getCycle(cycleId);
+    if (cycle.status !== 'published')
+      throw new BadRequestException('只有已发布批次可以截止');
+    const updated = await this.prisma.evalCycle.update({
+      where: { id: cycleId },
+      data: { status: 'closed', closedAt: new Date() },
+    });
+    await this.writeAudit(
+      cycleId,
+      adminId,
+      'close_cycle',
+      'cycle',
+      cycleId,
+      cycle,
+      updated,
+    );
+    return updated;
+  }
+
+  async reopenCycle(cycleId: number, endAtValue: unknown, adminId: number) {
+    const cycle = await this.getCycle(cycleId);
+    if (cycle.status !== 'closed')
+      throw new BadRequestException('只有已截止批次可以重新开放');
+    const endAt = toDateOrNull(endAtValue);
+    if (!endAt || endAt <= new Date())
+      throw new BadRequestException('新的截止时间必须晚于当前时间');
+    const updated = await this.prisma.evalCycle.update({
+      where: { id: cycleId },
+      data: { status: 'published', endAt, closedAt: null },
+    });
+    await this.writeAudit(
+      cycleId,
+      adminId,
+      'reopen_cycle',
+      'cycle',
+      cycleId,
+      cycle,
+      updated,
+    );
+    return updated;
+  }
+
+  async lockCycle(cycleId: number, adminId: number) {
+    const cycle = await this.getCycle(cycleId);
+    if (cycle.status !== 'closed')
+      throw new BadRequestException('只有已截止批次可以锁定结果');
+    const participants = await this.prisma.evalCycleParticipant.findMany({
+      where: { cycleId },
+    });
+    const lockedAt = new Date();
+    for (const participant of participants)
+      await this.recalculateEmployee(
+        cycleId,
+        participant.contactId,
+        true,
+        lockedAt,
+      );
+    const updated = await this.prisma.evalCycle.update({
+      where: { id: cycleId },
+      data: { status: 'locked', lockedAt, lockedBy: adminId },
+    });
+    await this.writeAudit(
+      cycleId,
+      adminId,
+      'lock_cycle',
+      'cycle',
+      cycleId,
+      cycle,
+      updated,
+    );
+    return updated;
+  }
+
+  async archiveCycle(cycleId: number, adminId: number) {
+    const cycle = await this.getCycle(cycleId);
+    if (cycle.status !== 'locked')
+      throw new BadRequestException('只有已锁定批次可以归档');
+    const updated = await this.prisma.evalCycle.update({
+      where: { id: cycleId },
+      data: { status: 'archived', archivedAt: new Date() },
+    });
+    await this.writeAudit(
+      cycleId,
+      adminId,
+      'archive_cycle',
+      'cycle',
+      cycleId,
+      cycle,
+      updated,
+    );
+    return updated;
+  }
+
+  async getOverview(cycleId: number) {
+    const cycle = await this.getCycle(cycleId);
+    const [participants, relations] = await Promise.all([
+      this.prisma.evalCycleParticipant.findMany({ where: { cycleId } }),
+      this.prisma.evalRelation.findMany({ where: { cycleId } }),
+    ]);
+    const activeRelations = relations.filter(
+      (relation) => relation.status !== 'exempt',
+    );
+    const submittedRelations = activeRelations.filter(
+      (relation) => relation.status === 'submitted' && relation.responseId,
+    );
+    const byGroup = new Map<
+      string,
+      {
+        participantIds: Set<number>;
+        relationIds: Set<number>;
+        submittedIds: Set<number>;
+      }
+    >();
+    const groupByContact = new Map(
+      participants.map((participant) => [
+        participant.contactId,
+        participant.groupName,
+      ]),
+    );
+    for (const participant of participants) {
+      if (!byGroup.has(participant.groupName))
+        byGroup.set(participant.groupName, {
+          participantIds: new Set(),
+          relationIds: new Set(),
+          submittedIds: new Set(),
+        });
+      byGroup
+        .get(participant.groupName)!
+        .participantIds.add(participant.contactId);
+    }
+    for (const relation of activeRelations) {
+      const group = groupByContact.get(relation.rateeContactId) || '未分组';
+      if (!byGroup.has(group))
+        byGroup.set(group, {
+          participantIds: new Set(),
+          relationIds: new Set(),
+          submittedIds: new Set(),
+        });
+      byGroup.get(group)!.relationIds.add(relation.id);
+      if (relation.status === 'submitted' && relation.responseId)
+        byGroup.get(group)!.submittedIds.add(relation.id);
+    }
+    const completedRatees = participants.filter((participant) => {
+      const expected = activeRelations.filter(
+        (relation) => relation.rateeContactId === participant.contactId,
+      ).length;
+      const received = submittedRelations.filter(
+        (relation) => relation.rateeContactId === participant.contactId,
+      ).length;
+      return expected > 0 && received >= expected;
+    }).length;
+    return {
+      cycle,
+      participantCount: participants.length,
+      completedRateeCount: completedRatees,
+      totalTasks: activeRelations.length,
+      submittedTasks: submittedRelations.length,
+      completionRate: activeRelations.length
+        ? submittedRelations.length / activeRelations.length
+        : 0,
+      specialCount: participants.filter(
+        (participant) => participant.mode === 'special',
+      ).length,
+      groups: Array.from(byGroup, ([groupName, value]) => ({
+        groupName,
+        participantCount: value.participantIds.size,
+        totalTasks: value.relationIds.size,
+        submittedTasks: value.submittedIds.size,
+        completionRate: value.relationIds.size
+          ? value.submittedIds.size / value.relationIds.size
+          : 0,
+      })),
+    };
+  }
+
+  async listResults(cycleId: number) {
+    const cycle = await this.getCycle(cycleId);
+    const participants = await this.prisma.evalCycleParticipant.findMany({
+      where: { cycleId },
+      orderBy: [{ groupName: 'asc' }, { nameSnapshot: 'asc' }],
+    });
+    if (!['locked', 'archived'].includes(cycle.status)) {
+      for (const participant of participants)
+        await this.recalculateEmployee(cycleId, participant.contactId, false);
+    }
+    const results = await this.prisma.evalEmployeeResult.findMany({
+      where: { cycleId },
+    });
+    const resultMap = new Map(
+      results.map((result) => [result.rateeContactId, result]),
+    );
+    return participants.map((participant) => ({
+      ...participant,
+      result: resultMap.get(participant.contactId) || null,
+    }));
+  }
+
+  async getEmployeeReport(cycleId: number, contactId: number) {
+    const cycle = await this.getCycle(cycleId);
+    const participant = await this.prisma.evalCycleParticipant.findUnique({
+      where: { cycleId_contactId: { cycleId, contactId } },
+    });
+    if (!participant) throw new NotFoundException('该员工不在本批次参评范围');
+    if (!['locked', 'archived'].includes(cycle.status))
+      await this.recalculateEmployee(cycleId, contactId, false);
+    const result = await this.prisma.evalEmployeeResult.findUnique({
+      where: { cycleId_rateeContactId: { cycleId, rateeContactId: contactId } },
+    });
+    const relations = await this.prisma.evalRelation.findMany({
+      where: { cycleId, rateeContactId: contactId, responseId: { not: null } },
+    });
+    const responseIds = relations
+      .map((relation) => relation.responseId)
+      .filter((id): id is number => !!id);
+    const responses = await this.prisma.surveyResponse.findMany({
+      where: { id: { in: responseIds }, validStatus: 'valid' },
+    });
+    const relationMap = new Map(
+      relations.map((relation) => [relation.responseId, relation]),
+    );
+    const cases = responses.flatMap((response) =>
+      Object.entries(response.answersJson as Record<string, unknown>).flatMap(
+        ([questionId, value]) => {
+          if (!value || typeof value !== 'object') return [];
+          const answer = value as EvalAnswer;
+          if (!String(answer.caseText || '').trim()) return [];
+          return [
+            {
+              questionId,
+              score: answer.score,
+              caseText: String(answer.caseText),
+              relationType: relationMap.get(response.id)?.relationType,
+            },
+          ];
+        },
+      ),
+    );
+    return { cycle, participant, result, cases };
+  }
+
+  async listRawResponses(cycleId: number) {
+    const relations = await this.listRelations(cycleId);
+    const responseIds = relations
+      .map((relation) => relation.responseId)
+      .filter((id): id is number => !!id);
+    const relationIds = relations.map((relation) => relation.id);
+    const responses = await this.prisma.surveyResponse.findMany({
+      where: {
+        OR: [
+          { evalRelationId: { in: relationIds } },
+          { id: { in: responseIds } },
+        ],
+      },
+      orderBy: { submittedAt: 'desc' },
+    });
+    const relationByResponse = new Map(
+      relations.map((relation) => [relation.responseId, relation]),
+    );
+    const relationById = new Map(
+      relations.map((relation) => [relation.id, relation]),
+    );
+    return responses.map((response) => ({
+      ...response,
+      relation: response.evalRelationId
+        ? relationById.get(response.evalRelationId)
+        : relationByResponse.get(response.id),
+    }));
+  }
+
+  async invalidateResponse(
+    responseId: number,
+    reasonValue: string,
+    adminId: number,
+  ) {
+    const response = await this.prisma.surveyResponse.findUnique({
+      where: { id: responseId },
+    });
+    if (!response?.evalRelationId)
+      throw new NotFoundException('环评答卷不存在');
+    const relation = await this.prisma.evalRelation.findUnique({
+      where: { id: response.evalRelationId },
+    });
+    if (!relation) throw new NotFoundException('评价关系不存在');
+    const cycle = await this.getCycle(relation.cycleId);
+    if (['locked', 'archived'].includes(cycle.status))
+      throw new BadRequestException('结果锁定后不能作废答卷');
+    const reason = String(reasonValue || '').trim();
+    if (!reason) throw new BadRequestException('请填写作废原因');
+    await this.prisma.$transaction(async (tx) => {
+      await tx.surveyResponse.update({
+        where: { id: responseId },
+        data: {
+          validStatus: 'invalid',
+          invalidReason: reason,
+          invalidatedAt: new Date(),
+          invalidatedBy: adminId,
+        },
+      });
+      if (relation.responseId === responseId)
+        await tx.evalRelation.update({
+          where: { id: relation.id },
+          data: { responseId: null, status: 'pending' },
+        });
+    });
+    await this.writeAudit(
+      relation.cycleId,
+      adminId,
+      'invalidate_response',
+      'response',
+      responseId,
+      response,
+      { validStatus: 'invalid' },
+      reason,
+    );
+    await this.recalculateEmployee(
+      relation.cycleId,
+      relation.rateeContactId,
+      false,
+    );
+    return { ok: true };
+  }
+
+  async restoreResponse(responseId: number, adminId: number) {
+    const response = await this.prisma.surveyResponse.findUnique({
+      where: { id: responseId },
+    });
+    if (!response?.evalRelationId)
+      throw new NotFoundException('环评答卷不存在');
+    const relation = await this.prisma.evalRelation.findUnique({
+      where: { id: response.evalRelationId },
+    });
+    if (!relation) throw new NotFoundException('评价关系不存在');
+    const cycle = await this.getCycle(relation.cycleId);
+    if (['locked', 'archived'].includes(cycle.status))
+      throw new BadRequestException('结果锁定后不能恢复答卷');
+    if (relation.responseId && relation.responseId !== responseId)
+      throw new ConflictException('该关系已经有新的有效答卷，不能恢复旧答卷');
+    await this.prisma.$transaction(async (tx) => {
+      await tx.surveyResponse.update({
+        where: { id: responseId },
+        data: {
+          validStatus: 'valid',
+          restoredAt: new Date(),
+          restoredBy: adminId,
+        },
+      });
+      await tx.evalRelation.update({
+        where: { id: relation.id },
+        data: { responseId, status: 'submitted' },
+      });
+    });
+    await this.writeAudit(
+      relation.cycleId,
+      adminId,
+      'restore_response',
+      'response',
+      responseId,
+      response,
+      { validStatus: 'valid' },
+    );
+    await this.recalculateEmployee(
+      relation.cycleId,
+      relation.rateeContactId,
+      false,
+    );
+    return { ok: true };
+  }
+
+  private async recalculateEmployee(
+    cycleId: number,
+    rateeContactId: number,
+    final: boolean,
+    lockedAt?: Date,
+  ) {
+    const cycle = await this.getCycle(cycleId);
+    const snapshot =
+      cycle.templateSnapshotJson ||
+      (cycle.templateSurveyId
+        ? (await this.getTemplate(cycle.templateSurveyId)).schemaJson
+        : null);
+    const template = this.parseTemplate(snapshot);
+    const relations = await this.prisma.evalRelation.findMany({
+      where: { cycleId, rateeContactId, status: { not: 'exempt' } },
+    });
+    const responseIds = relations
+      .map((relation) => relation.responseId)
+      .filter((id): id is number => !!id);
+    const responses = await this.prisma.surveyResponse.findMany({
+      where: { id: { in: responseIds }, validStatus: 'valid' },
+    });
+    const responseMap = new Map(
+      responses.map((response) => [response.id, response]),
+    );
+    const scoringResponses: EvalResponseForScoring[] = relations.flatMap(
+      (relation) => {
+        const response = relation.responseId
+          ? responseMap.get(relation.responseId)
+          : undefined;
+        return response
+          ? [
+              {
+                relationType:
+                  relation.relationType as EvalResponseForScoring['relationType'],
+                answers: response.answersJson as Record<string, unknown>,
+              },
+            ]
+          : [];
+      },
+    );
+    const score = calculateEmployeeScore(template, scoringResponses);
+    return this.prisma.evalEmployeeResult.upsert({
+      where: { cycleId_rateeContactId: { cycleId, rateeContactId } },
+      create: {
+        cycleId,
+        rateeContactId,
+        resultStatus: final ? 'final' : 'provisional',
+        totalScore: score.totalScore,
+        dimensionScoresJson:
+          score.dimensionScores as unknown as Prisma.InputJsonValue,
+        questionScoresJson:
+          score.questionScores as unknown as Prisma.InputJsonValue,
+        receivedCount: scoringResponses.length,
+        expectedCount: relations.length,
+        templateVersion: template.version,
+        calculatedAt: new Date(),
+        lockedAt: final ? lockedAt || new Date() : null,
+      },
+      update: {
+        resultStatus: final ? 'final' : 'provisional',
+        totalScore: score.totalScore,
+        dimensionScoresJson:
+          score.dimensionScores as unknown as Prisma.InputJsonValue,
+        questionScoresJson:
+          score.questionScores as unknown as Prisma.InputJsonValue,
+        receivedCount: scoringResponses.length,
+        expectedCount: relations.length,
+        templateVersion: template.version,
+        calculatedAt: new Date(),
+        ...(final ? { lockedAt: lockedAt || new Date() } : {}),
+      },
+    });
+  }
+
+  private async writeAudit(
+    cycleId: number,
+    adminId: number,
+    action: string,
+    targetType: string,
+    targetId: string | number | null,
+    before: unknown,
+    after: unknown,
+    reason?: string,
+  ) {
+    return this.prisma.evalAuditLog.create({
+      data: {
+        cycleId,
+        adminId,
+        action,
+        targetType,
+        targetId: targetId === null ? null : String(targetId),
+        beforeJson: before === undefined ? undefined : toJsonInput(before),
+        afterJson: after === undefined ? undefined : toJsonInput(after),
+        reason: reason || null,
+      },
+    });
   }
 
   // ── 填写端：待我填写 + 逐份提交 ──
 
   async listMyTasks(fillUser: EvalFillUser) {
     const relations = await this.prisma.evalRelation.findMany({
-      where: { raterContactId: fillUser.sub, cycle: { status: { not: 'closed' } } },
+      where: {
+        raterContactId: fillUser.sub,
+        status: { not: 'exempt' },
+        cycle: { status: 'published' },
+      },
       include: { cycle: true },
       orderBy: [{ cycleId: 'desc' }, { id: 'asc' }],
     });
-    const rateeIds = Array.from(new Set(relations.map((r) => r.rateeContactId)));
-    const surveyIds = Array.from(new Set(relations.map((r) => r.surveyId)));
-    const [ratees, surveys] = await Promise.all([
+    const now = new Date();
+    const available = relations.filter(
+      (relation) =>
+        relation.cycle.version < 2 ||
+        ((!relation.cycle.startAt || relation.cycle.startAt <= now) &&
+          (!relation.cycle.endAt || relation.cycle.endAt >= now)),
+    );
+    const rateeIds = Array.from(
+      new Set(available.map((r) => r.rateeContactId)),
+    );
+    const surveyIds = Array.from(new Set(available.map((r) => r.surveyId)));
+    const [ratees, surveys, participants] = await Promise.all([
       this.prisma.contact.findMany({ where: { id: { in: rateeIds } } }),
-      this.prisma.survey.findMany({ where: { id: { in: surveyIds } }, select: { id: true, title: true } }),
+      this.prisma.survey.findMany({
+        where: { id: { in: surveyIds } },
+        select: { id: true, title: true },
+      }),
+      this.prisma.evalCycleParticipant.findMany({
+        where: {
+          cycleId: { in: Array.from(new Set(available.map((r) => r.cycleId))) },
+          contactId: { in: rateeIds },
+        },
+      }),
     ]);
     const rateeName = new Map(ratees.map((c) => [c.id, c.name]));
+    for (const participant of participants)
+      rateeName.set(participant.contactId, participant.nameSnapshot);
     const surveyTitle = new Map(surveys.map((s) => [s.id, s.title]));
 
     const byCycle = new Map<number, any>();
-    for (const r of relations) {
+    for (const r of available) {
       if (!byCycle.has(r.cycleId)) {
-        byCycle.set(r.cycleId, { cycleId: r.cycleId, cycleName: r.cycle.name, cycleStatus: r.cycle.status, tasks: [] });
+        byCycle.set(r.cycleId, {
+          cycleId: r.cycleId,
+          cycleName: r.cycle.name,
+          cycleStatus: r.cycle.status,
+          tasks: [],
+        });
       }
       byCycle.get(r.cycleId).tasks.push({
         relationId: r.id,
         type: r.relationType,
         rateeContactId: r.rateeContactId,
-        rateeName: r.relationType === 'self' ? '本人（自评）' : rateeName.get(r.rateeContactId) ?? `#${r.rateeContactId}`,
+        rateeName:
+          r.relationType === 'self'
+            ? '本人（自评）'
+            : (rateeName.get(r.rateeContactId) ?? `#${r.rateeContactId}`),
         surveyId: r.surveyId,
         surveyTitle: surveyTitle.get(r.surveyId) ?? '',
         done: !!r.responseId,
@@ -370,64 +1559,196 @@ export class EvalService {
   }
 
   async getTask(relationId: number, fillUser: EvalFillUser) {
-    const rel = await this.prisma.evalRelation.findUnique({ where: { id: relationId } });
+    const rel = await this.prisma.evalRelation.findUnique({
+      where: { id: relationId },
+      include: { cycle: true },
+    });
     if (!rel) throw new NotFoundException('填写任务不存在');
-    if (rel.raterContactId !== fillUser.sub) throw new ForbiddenException('这不是分配给你的填写任务');
-    const survey = await this.prisma.survey.findUnique({ where: { id: rel.surveyId } });
+    if (rel.raterContactId !== fillUser.sub)
+      throw new ForbiddenException('这不是分配给你的填写任务');
+    this.assertCycleFillable(rel.cycle);
+    if (rel.status === 'exempt') throw new BadRequestException('该任务已豁免');
+    const survey = await this.prisma.survey.findUnique({
+      where: { id: rel.surveyId },
+    });
     if (!survey) throw new NotFoundException('问卷模板不存在');
-    const ratee = rel.relationType === 'self' ? null : await this.prisma.contact.findUnique({ where: { id: rel.rateeContactId } });
+    const participant =
+      rel.relationType === 'self'
+        ? null
+        : await this.prisma.evalCycleParticipant.findUnique({
+            where: {
+              cycleId_contactId: {
+                cycleId: rel.cycleId,
+                contactId: rel.rateeContactId,
+              },
+            },
+          });
+    const ratee = participant
+      ? null
+      : rel.relationType === 'self'
+        ? null
+        : await this.prisma.contact.findUnique({
+            where: { id: rel.rateeContactId },
+          });
     return {
       relationId: rel.id,
       type: rel.relationType,
       done: !!rel.responseId,
-      rateeName: rel.relationType === 'self' ? '本人（自评）' : ratee?.name ?? `#${rel.rateeContactId}`,
-      survey: { id: survey.id, title: survey.title, schemaJson: survey.schemaJson },
+      rateeName:
+        rel.relationType === 'self'
+          ? '本人（自评）'
+          : (participant?.nameSnapshot ??
+            ratee?.name ??
+            `#${rel.rateeContactId}`),
+      survey: {
+        id: survey.id,
+        title: survey.title,
+        schemaJson:
+          rel.cycle.version >= 2
+            ? rel.cycle.templateSnapshotJson || survey.schemaJson
+            : survey.schemaJson,
+      },
     };
   }
 
-  async submitTask(relationId: number, answersJson: Record<string, unknown>, fillUser: EvalFillUser) {
-    const rel = await this.prisma.evalRelation.findUnique({ where: { id: relationId } });
+  async submitTask(
+    relationId: number,
+    answersJson: Record<string, unknown>,
+    fillUser: EvalFillUser,
+    startedAtValue?: unknown,
+  ) {
+    const rel = await this.prisma.evalRelation.findUnique({
+      where: { id: relationId },
+      include: { cycle: true },
+    });
     if (!rel) throw new NotFoundException('填写任务不存在');
-    if (rel.raterContactId !== fillUser.sub) throw new ForbiddenException('这不是分配给你的填写任务');
-    if (rel.responseId) throw new ConflictException('该任务你已提交，无需重复填写');
+    if (rel.raterContactId !== fillUser.sub)
+      throw new ForbiddenException('这不是分配给你的填写任务');
+    this.assertCycleFillable(rel.cycle);
+    if (rel.status === 'exempt') throw new BadRequestException('该任务已豁免');
+    if (rel.responseId)
+      throw new ConflictException('该任务你已提交，无需重复填写');
 
-    // ponytail: 必填校验交给前端；此处只保证归属+去重两道后端闸门，不复制 AppService 的题目校验器
-    return this.prisma.$transaction(async (tx) => {
+    if (rel.cycle.version >= 2) {
+      const survey = await this.prisma.survey.findUnique({
+        where: { id: rel.surveyId },
+      });
+      if (!survey) throw new NotFoundException('环评模板不存在');
+      const template = this.parseTemplate(
+        rel.cycle.templateSnapshotJson || survey.schemaJson,
+      );
+      this.validateEvalAnswers(template, answersJson);
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
       const response = await tx.surveyResponse.create({
         data: {
           surveyId: rel.surveyId,
           wecomUserid: fillUser.wecomUserid,
           rateeContactId: rel.rateeContactId,
+          evalRelationId: rel.id,
+          startedAt: toDateOrNull(startedAtValue),
           answersJson: answersJson as Prisma.InputJsonValue,
         },
       });
-      await tx.evalRelation.update({ where: { id: rel.id }, data: { responseId: response.id } });
+      const updated = await tx.evalRelation.updateMany({
+        where: { id: rel.id, responseId: null, status: 'pending' },
+        data: { responseId: response.id, status: 'submitted' },
+      });
+      if (updated.count !== 1)
+        throw new ConflictException('该任务已经提交或状态已变化，请刷新后重试');
       return { ok: true, responseId: response.id };
     });
+    if (rel.cycle.version >= 2)
+      await this.recalculateEmployee(rel.cycleId, rel.rateeContactId, false);
+    return result;
+  }
+
+  private assertCycleFillable(cycle: {
+    status: string;
+    version: number;
+    startAt: Date | null;
+    endAt: Date | null;
+  }) {
+    if (cycle.status !== 'published')
+      throw new BadRequestException('当前批次未开放填写');
+    if (cycle.version < 2) return;
+    const now = new Date();
+    if (cycle.startAt && now < cycle.startAt)
+      throw new BadRequestException('环评尚未开始');
+    if (cycle.endAt && now > cycle.endAt)
+      throw new BadRequestException('环评已经截止');
+  }
+
+  private validateEvalAnswers(
+    template: EvalTemplate,
+    answers: Record<string, unknown>,
+  ) {
+    for (const question of template.questions) {
+      const value = answers[question.id];
+      if (value === undefined || value === null || value === '') {
+        if (question.required)
+          throw new BadRequestException(`请填写：${question.label}`);
+        continue;
+      }
+      if (typeof value !== 'object')
+        throw new BadRequestException(`${question.label} 的答案格式不正确`);
+      const answer = value as EvalAnswer;
+      const score = Number(answer.score);
+      if (!Number.isInteger(score) || score < 0 || score > 5)
+        throw new BadRequestException(`${question.label} 的评分范围为 0~5`);
+      if (
+        question.caseRequiredScores.includes(score) &&
+        !String(answer.caseText || '').trim()
+      ) {
+        throw new BadRequestException(`请填写“${question.label}”的案例说明`);
+      }
+    }
   }
 
   // ── 结果导出（Excel，三分表：自评/他评/领导评价，答案按题拆列）──
 
   async exportCycle(cycleId: number): Promise<ExcelJS.Buffer> {
     const cycle = await this.getCycle(cycleId);
+    if (cycle.version >= 2) return this.exportV2Cycle(cycleId);
     const rows = await this.listRelations(cycleId);
-    const responseIds = rows.map((r) => r.responseId).filter((x): x is number => !!x);
-    const responses = await this.prisma.surveyResponse.findMany({ where: { id: { in: responseIds } } });
-    const answerOf = new Map(responses.map((r) => [r.id, r.answersJson as Record<string, unknown>]));
+    const responseIds = rows
+      .map((r) => r.responseId)
+      .filter((x): x is number => !!x);
+    const responses = await this.prisma.surveyResponse.findMany({
+      where: { id: { in: responseIds } },
+    });
+    const answerOf = new Map(
+      responses.map((r) => [r.id, r.answersJson as Record<string, unknown>]),
+    );
     const submittedAt = new Map(responses.map((r) => [r.id, r.submittedAt]));
 
     // 三份模板的题目（描述题不占列）
-    const templateIds = [cycle.selfSurveyId, cycle.peerSurveyId, cycle.leaderSurveyId].filter((x): x is number => !!x);
-    const surveys = await this.prisma.survey.findMany({ where: { id: { in: templateIds } } });
+    const templateIds = [
+      cycle.selfSurveyId,
+      cycle.peerSurveyId,
+      cycle.leaderSurveyId,
+    ].filter((x): x is number => !!x);
+    const surveys = await this.prisma.survey.findMany({
+      where: { id: { in: templateIds } },
+    });
     const questionsOf = (surveyId: number | null) => {
       if (!surveyId) return [];
       const s = surveys.find((x) => x.id === surveyId);
-      const qs = (((s?.schemaJson as any)?.questions) || []) as Array<{ id: string; type: string; label: string }>;
+      const qs = ((s?.schemaJson as any)?.questions || []) as Array<{
+        id: string;
+        type: string;
+        label: string;
+      }>;
       return qs.filter((q) => q.type !== 'description');
     };
 
     const wb = new ExcelJS.Workbook();
-    const sheets: Array<{ type: string; label: string; surveyId: number | null }> = [
+    const sheets: Array<{
+      type: string;
+      label: string;
+      surveyId: number | null;
+    }> = [
       { type: 'self', label: '自评', surveyId: cycle.selfSurveyId },
       { type: 'peer', label: '他评', surveyId: cycle.peerSurveyId },
       { type: 'leader', label: '领导评价', surveyId: cycle.leaderSurveyId },
@@ -443,19 +1764,25 @@ export class EvalService {
         { header: '被评人', key: 'ratee', width: 14 },
         { header: '是否提交', key: 'submitted', width: 10 },
         { header: '提交时间', key: 'time', width: 20 },
-        ...questions.map((q, i) => ({ header: `Q${i + 1} ${q.label}`, key: `q_${q.id}`, width: 24 })),
+        ...questions.map((q, i) => ({
+          header: `Q${i + 1} ${q.label}`,
+          key: `q_${q.id}`,
+          width: 24,
+        })),
       ];
       ws.getRow(1).font = { bold: true };
 
       for (const r of rows.filter((x) => x.relationType === sheet.type)) {
-        const ans = r.responseId ? answerOf.get(r.responseId) ?? {} : {};
+        const ans = r.responseId ? (answerOf.get(r.responseId) ?? {}) : {};
         const row: Record<string, unknown> = {
           cycle: cycle.name,
           type: sheet.label,
           rater: r.raterName,
           ratee: r.rateeName,
           submitted: r.done ? '已提交' : '未提交',
-          time: r.responseId ? new Date(submittedAt.get(r.responseId)!).toLocaleString('zh-CN') : '',
+          time: r.responseId
+            ? new Date(submittedAt.get(r.responseId)!).toLocaleString('zh-CN')
+            : '',
         };
         for (const q of questions) row[`q_${q.id}`] = formatAnswer(ans[q.id]);
         ws.addRow(row);
@@ -463,6 +1790,155 @@ export class EvalService {
     }
 
     return wb.xlsx.writeBuffer();
+  }
+
+  private async exportV2Cycle(cycleId: number): Promise<ExcelJS.Buffer> {
+    const cycle = await this.getCycle(cycleId);
+    const template = this.parseTemplate(
+      cycle.templateSnapshotJson ||
+        (cycle.templateSurveyId
+          ? (await this.getTemplate(cycle.templateSurveyId)).schemaJson
+          : null),
+    );
+    const [resultRows, rawRows] = await Promise.all([
+      this.listResults(cycleId),
+      this.listRawResponses(cycleId),
+    ]);
+    const workbook = new ExcelJS.Workbook();
+
+    const summarySheet = workbook.addWorksheet('员工汇总');
+    summarySheet.columns = [
+      { header: '员工', key: 'name', width: 16 },
+      { header: '工号', key: 'jobNo', width: 14 },
+      { header: '部门', key: 'department', width: 18 },
+      { header: '评价小组', key: 'group', width: 18 },
+      { header: '已收/应收', key: 'progress', width: 12 },
+      { header: '总分', key: 'total', width: 12 },
+      { header: '结果状态', key: 'status', width: 12 },
+      ...template.dimensions.map((dimension) => ({
+        header: dimension.name,
+        key: `dimension_${dimension.id}`,
+        width: 14,
+      })),
+    ];
+    summarySheet.getRow(1).font = { bold: true };
+    for (const row of resultRows) {
+      const result = row.result as any;
+      const values: Record<string, unknown> = {
+        name: row.nameSnapshot,
+        jobNo: row.jobNoSnapshot || '',
+        department: row.departmentSnapshot || '',
+        group: row.groupName,
+        progress: `${result?.receivedCount || 0}/${result?.expectedCount || 0}`,
+        total:
+          result?.totalScore === null || result?.totalScore === undefined
+            ? ''
+            : Number(result.totalScore).toFixed(2),
+        status: result?.resultStatus === 'final' ? '最终' : '暂定',
+      };
+      for (const dimension of (result?.dimensionScoresJson || []) as any[]) {
+        values[`dimension_${dimension.dimensionId}`] =
+          dimension.score === null ? '' : Number(dimension.score).toFixed(2);
+      }
+      summarySheet.addRow(values);
+    }
+
+    const questionSheet = workbook.addWorksheet('逐题得分');
+    questionSheet.columns = [
+      { header: '员工', key: 'name', width: 16 },
+      { header: '评价小组', key: 'group', width: 18 },
+      { header: '维度', key: 'dimension', width: 16 },
+      { header: '题目', key: 'question', width: 32 },
+      { header: '自评', key: 'self', width: 10 },
+      { header: '他评平均', key: 'other', width: 12 },
+      { header: '综合得分', key: 'score', width: 12 },
+      { header: '有效答案数', key: 'count', width: 12 },
+    ];
+    questionSheet.getRow(1).font = { bold: true };
+    const dimensionName = new Map(
+      template.dimensions.map((dimension) => [dimension.id, dimension.name]),
+    );
+    for (const row of resultRows) {
+      for (const question of ((row.result as any)?.questionScoresJson ||
+        []) as any[]) {
+        questionSheet.addRow({
+          name: row.nameSnapshot,
+          group: row.groupName,
+          dimension: dimensionName.get(question.dimensionId) || '',
+          question: question.label,
+          self: displayScore(question.selfScore),
+          other: displayScore(question.otherScore),
+          score: displayScore(question.score),
+          count: question.answerCount,
+        });
+      }
+    }
+
+    const rawSheet = workbook.addWorksheet('原始答卷');
+    rawSheet.columns = [
+      { header: '答卷编号', key: 'id', width: 12 },
+      { header: '评价人', key: 'rater', width: 16 },
+      { header: '被评人', key: 'ratee', width: 16 },
+      { header: '关系', key: 'relationType', width: 12 },
+      { header: '开始时间', key: 'startedAt', width: 22 },
+      { header: '提交时间', key: 'submittedAt', width: 22 },
+      { header: '有效状态', key: 'validStatus', width: 12 },
+      ...template.questions.flatMap((question, index) => [
+        {
+          header: `Q${index + 1} ${question.label}（分值）`,
+          key: `score_${question.id}`,
+          width: 24,
+        },
+        {
+          header: `Q${index + 1} ${question.label}（案例）`,
+          key: `case_${question.id}`,
+          width: 40,
+        },
+      ]),
+    ];
+    rawSheet.getRow(1).font = { bold: true };
+    const caseSheet = workbook.addWorksheet('案例说明');
+    caseSheet.columns = [
+      { header: '被评人', key: 'ratee', width: 16 },
+      { header: '评价关系', key: 'relationType', width: 12 },
+      { header: '维度', key: 'dimension', width: 16 },
+      { header: '题目', key: 'question', width: 32 },
+      { header: '分值', key: 'score', width: 10 },
+      { header: '案例', key: 'caseText', width: 60 },
+    ];
+    caseSheet.getRow(1).font = { bold: true };
+    for (const row of rawRows) {
+      const answers = row.answersJson as Record<string, unknown>;
+      const values: Record<string, unknown> = {
+        id: row.id,
+        rater: row.relation?.raterName || '',
+        ratee: row.relation?.rateeName || '',
+        relationType: relationLabel(row.relation?.relationType),
+        startedAt: row.startedAt ? formatDateTime(row.startedAt) : '',
+        submittedAt: formatDateTime(row.submittedAt),
+        validStatus: row.validStatus === 'valid' ? '有效' : '已作废',
+      };
+      for (const question of template.questions) {
+        const answer = answers[question.id] as EvalAnswer | undefined;
+        values[`score_${question.id}`] = answer?.score ?? '';
+        values[`case_${question.id}`] = answer?.caseText || '';
+        if (String(answer?.caseText || '').trim()) {
+          caseSheet.addRow({
+            ratee: row.relation?.rateeName || '',
+            relationType: relationLabel(row.relation?.relationType),
+            dimension: dimensionName.get(question.dimensionId) || '',
+            question: question.label,
+            score: answer?.score,
+            caseText: answer?.caseText,
+          });
+        }
+      }
+      rawSheet.addRow(values);
+    }
+
+    for (const sheet of workbook.worksheets)
+      sheet.views = [{ state: 'frozen', ySplit: 1 }];
+    return workbook.xlsx.writeBuffer();
   }
 }
 
@@ -474,10 +1950,62 @@ function formatAnswer(v: unknown): string {
 }
 function formatOne(v: unknown): string {
   const s = String(v);
-  return s.startsWith('__other__:') ? `其他：${s.slice('__other__:'.length)}` : s;
+  return s.startsWith('__other__:')
+    ? `其他：${s.slice('__other__:'.length)}`
+    : s;
 }
 
 function toIdOrNull(v: any): number | null {
   const n = Number(v);
   return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function uniquePositiveIds(values: unknown[]): number[] {
+  return Array.from(
+    new Set(
+      values
+        .map(Number)
+        .filter((value) => Number.isInteger(value) && value > 0),
+    ),
+  );
+}
+
+function toDateOrNull(value: unknown): Date | null {
+  if (value === undefined || value === null || value === '') return null;
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime()))
+    throw new BadRequestException('日期时间格式不正确');
+  return date;
+}
+
+function displayScore(value: unknown): string {
+  return value === null || value === undefined ? '' : Number(value).toFixed(2);
+}
+
+function relationLabel(value: unknown): string {
+  return (
+    (
+      { self: '自评', peer: '同事评价', leader: '领导评价' } as Record<
+        string,
+        string
+      >
+    )[String(value)] || String(value || '')
+  );
+}
+
+function formatDateTime(value: Date | string): string {
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(new Date(value));
+}
+
+function toJsonInput(value: unknown): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 }

@@ -159,7 +159,7 @@ export class AppService {
       where: {
         isDeleted: false,
         title: query.keyword ? { contains: query.keyword } : undefined,
-        type: query.type || undefined,
+        type: query.type || { not: SurveyType.evaluation },
         ...folderFilter,
       },
       select: {

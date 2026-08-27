@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseIntPipe,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { FillAuthGuard } from './fill-auth.guard';
 import { EvalService } from './eval.service';
 
@@ -14,12 +23,24 @@ export class EvalFillController {
   }
 
   @Get('tasks/:relationId')
-  getTask(@Param('relationId', ParseIntPipe) relationId: number, @Req() req: any) {
+  getTask(
+    @Param('relationId', ParseIntPipe) relationId: number,
+    @Req() req: any,
+  ) {
     return this.evalService.getTask(relationId, req.fillUser);
   }
 
   @Post('tasks/:relationId/submit')
-  submitTask(@Param('relationId', ParseIntPipe) relationId: number, @Body('answers') answers: Record<string, unknown>, @Req() req: any) {
-    return this.evalService.submitTask(relationId, answers || {}, req.fillUser);
+  submitTask(
+    @Param('relationId', ParseIntPipe) relationId: number,
+    @Body() body: any,
+    @Req() req: any,
+  ) {
+    return this.evalService.submitTask(
+      relationId,
+      body?.answers || {},
+      req.fillUser,
+      body?.startedAt,
+    );
   }
 }

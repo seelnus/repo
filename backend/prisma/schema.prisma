@@ -11,6 +11,7 @@ enum SurveyType {
   case_collection
   assessment
   promotional_document
+  evaluation
 }
 
 enum SurveyStatus {
@@ -75,19 +76,19 @@ model SurveyFolder {
 }
 
 model Survey {
-  id         Int          @id @default(autoincrement()) @db.UnsignedInt
-  title      String       @db.VarChar(200)
-  type       SurveyType   @default(assessment)
-  schemaJson Json         @map("schema_json")
-  status     SurveyStatus @default(draft)
-  shareToken String       @unique @map("share_token") @db.VarChar(64)
-  isDeleted  Boolean      @default(false) @map("is_deleted")
-  publicFill Boolean      @default(false) @map("public_fill")
-  allowMultipleSubmissions Boolean @default(false) @map("allow_multiple_submissions")
-  createdBy  Int          @map("created_by") @db.UnsignedInt
-  folderId   Int?         @map("folder_id") @db.UnsignedInt
-  createdAt  DateTime     @default(now()) @map("created_at")
-  updatedAt  DateTime     @updatedAt @map("updated_at")
+  id                       Int          @id @default(autoincrement()) @db.UnsignedInt
+  title                    String       @db.VarChar(200)
+  type                     SurveyType   @default(assessment)
+  schemaJson               Json         @map("schema_json")
+  status                   SurveyStatus @default(draft)
+  shareToken               String       @unique @map("share_token") @db.VarChar(64)
+  isDeleted                Boolean      @default(false) @map("is_deleted")
+  publicFill               Boolean      @default(false) @map("public_fill")
+  allowMultipleSubmissions Boolean      @default(false) @map("allow_multiple_submissions")
+  createdBy                Int          @map("created_by") @db.UnsignedInt
+  folderId                 Int?         @map("folder_id") @db.UnsignedInt
+  createdAt                DateTime     @default(now()) @map("created_at")
+  updatedAt                DateTime     @updatedAt @map("updated_at")
 
   responses SurveyResponse[]
   whitelist SurveyWhitelist?
@@ -125,14 +126,22 @@ model WhitelistMember {
 }
 
 model SurveyResponse {
-  id             Int      @id @default(autoincrement()) @db.UnsignedInt
-  surveyId       Int      @map("survey_id") @db.UnsignedInt
-  wecomUserid    String   @map("wecom_userid") @db.VarChar(64)
-  rateeContactId Int?     @map("ratee_contact_id") @db.UnsignedInt
-  answersJson    Json     @map("answers_json")
-  submitCount    Int      @default(1) @map("submit_count") @db.UnsignedTinyInt
-  submittedAt    DateTime @default(now()) @map("submitted_at")
-  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
+  id             Int       @id @default(autoincrement()) @db.UnsignedInt
+  surveyId       Int       @map("survey_id") @db.UnsignedInt
+  wecomUserid    String    @map("wecom_userid") @db.VarChar(64)
+  rateeContactId Int?      @map("ratee_contact_id") @db.UnsignedInt
+  evalRelationId Int?      @map("eval_relation_id") @db.UnsignedInt
+  answersJson    Json      @map("answers_json")
+  startedAt      DateTime? @map("started_at")
+  validStatus    String    @default("valid") @map("valid_status") @db.VarChar(20)
+  invalidReason  String?   @map("invalid_reason") @db.VarChar(500)
+  invalidatedAt  DateTime? @map("invalidated_at")
+  invalidatedBy  Int?      @map("invalidated_by") @db.UnsignedInt
+  restoredAt     DateTime? @map("restored_at")
+  restoredBy     Int?      @map("restored_by") @db.UnsignedInt
+  submitCount    Int       @default(1) @map("submit_count") @db.UnsignedTinyInt
+  submittedAt    DateTime  @default(now()) @map("submitted_at")
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
 
   survey  Survey           @relation(fields: [surveyId], references: [id])
   comment ResponseComment?
@@ -157,35 +166,111 @@ model ResponseComment {
 // ===== 360 环评 =====
 
 model EvalCycle {
-  id              Int      @id @default(autoincrement()) @db.UnsignedInt
-  name            String   @db.VarChar(200)
-  scopeDepartment String?  @map("scope_department") @db.VarChar(200)
-  selfSurveyId    Int?     @map("self_survey_id") @db.UnsignedInt
-  peerSurveyId    Int?     @map("peer_survey_id") @db.UnsignedInt
-  leaderSurveyId  Int?     @map("leader_survey_id") @db.UnsignedInt
-  status          String   @default("draft") @db.VarChar(20)
-  createdBy       Int      @map("created_by") @db.UnsignedInt
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  id                   Int       @id @default(autoincrement()) @db.UnsignedInt
+  name                 String    @db.VarChar(200)
+  scopeDepartment      String?   @map("scope_department") @db.VarChar(200)
+  selfSurveyId         Int?      @map("self_survey_id") @db.UnsignedInt
+  peerSurveyId         Int?      @map("peer_survey_id") @db.UnsignedInt
+  leaderSurveyId       Int?      @map("leader_survey_id") @db.UnsignedInt
+  templateSurveyId     Int?      @map("template_survey_id") @db.UnsignedInt
+  templateSnapshotJson Json?     @map("template_snapshot_json")
+  version              Int       @default(1) @db.UnsignedTinyInt
+  startAt              DateTime? @map("start_at")
+  endAt                DateTime? @map("end_at")
+  closedAt             DateTime? @map("closed_at")
+  lockedAt             DateTime? @map("locked_at")
+  lockedBy             Int?      @map("locked_by") @db.UnsignedInt
+  archivedAt           DateTime? @map("archived_at")
+  status               String    @default("draft") @db.VarChar(20)
+  createdBy            Int       @map("created_by") @db.UnsignedInt
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
 
-  relations EvalRelation[]
+  relations    EvalRelation[]
+  participants EvalCycleParticipant[]
+  results      EvalEmployeeResult[]
+  auditLogs    EvalAuditLog[]
 
   @@map("eval_cycles")
 }
 
 model EvalRelation {
-  id             Int      @id @default(autoincrement()) @db.UnsignedInt
-  cycleId        Int      @map("cycle_id") @db.UnsignedInt
-  raterContactId Int      @map("rater_contact_id") @db.UnsignedInt
-  rateeContactId Int      @map("ratee_contact_id") @db.UnsignedInt
-  relationType   String   @map("relation_type") @db.VarChar(10)
-  surveyId       Int      @map("survey_id") @db.UnsignedInt
-  source         String   @default("auto") @db.VarChar(10)
-  responseId     Int?     @map("response_id") @db.UnsignedInt
-  createdAt      DateTime @default(now()) @map("created_at")
+  id              Int      @id @default(autoincrement()) @db.UnsignedInt
+  cycleId         Int      @map("cycle_id") @db.UnsignedInt
+  raterContactId  Int      @map("rater_contact_id") @db.UnsignedInt
+  rateeContactId  Int      @map("ratee_contact_id") @db.UnsignedInt
+  relationType    String   @map("relation_type") @db.VarChar(10)
+  surveyId        Int      @map("survey_id") @db.UnsignedInt
+  source          String   @default("auto") @db.VarChar(10)
+  status          String   @default("pending") @db.VarChar(20)
+  exceptionReason String?  @map("exception_reason") @db.VarChar(500)
+  responseId      Int?     @map("response_id") @db.UnsignedInt
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
 
   cycle EvalCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
 
   @@unique([cycleId, raterContactId, rateeContactId], map: "uk_cycle_rater_ratee")
   @@map("eval_relations")
+}
+
+model EvalCycleParticipant {
+  id                 Int      @id @default(autoincrement()) @db.UnsignedInt
+  cycleId            Int      @map("cycle_id") @db.UnsignedInt
+  contactId          Int      @map("contact_id") @db.UnsignedInt
+  nameSnapshot       String   @map("name_snapshot") @db.VarChar(100)
+  jobNoSnapshot      String?  @map("job_no_snapshot") @db.VarChar(50)
+  departmentSnapshot String?  @map("department_snapshot") @db.VarChar(200)
+  positionSnapshot   String?  @map("position_snapshot") @db.VarChar(100)
+  groupKey           String   @map("group_key") @db.VarChar(200)
+  groupName          String   @map("group_name") @db.VarChar(200)
+  mode               String   @default("normal") @db.VarChar(20)
+  peerExempt         Boolean  @default(false) @map("peer_exempt")
+  exceptionReason    String?  @map("exception_reason") @db.VarChar(500)
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  cycle EvalCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  @@unique([cycleId, contactId], map: "uk_eval_participant")
+  @@index([cycleId, groupKey], map: "idx_eval_participant_group")
+  @@map("eval_cycle_participants")
+}
+
+model EvalEmployeeResult {
+  id                  Int       @id @default(autoincrement()) @db.UnsignedInt
+  cycleId             Int       @map("cycle_id") @db.UnsignedInt
+  rateeContactId      Int       @map("ratee_contact_id") @db.UnsignedInt
+  resultStatus        String    @default("provisional") @map("result_status") @db.VarChar(20)
+  totalScore          Decimal?  @map("total_score") @db.Decimal(8, 4)
+  dimensionScoresJson Json      @map("dimension_scores_json")
+  questionScoresJson  Json      @map("question_scores_json")
+  receivedCount       Int       @default(0) @map("received_count") @db.UnsignedInt
+  expectedCount       Int       @default(0) @map("expected_count") @db.UnsignedInt
+  templateVersion     Int       @default(2) @map("template_version") @db.UnsignedInt
+  calculatedAt        DateTime  @default(now()) @map("calculated_at")
+  lockedAt            DateTime? @map("locked_at")
+
+  cycle EvalCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  @@unique([cycleId, rateeContactId], map: "uk_eval_employee_result")
+  @@map("eval_employee_results")
+}
+
+model EvalAuditLog {
+  id         Int      @id @default(autoincrement()) @db.UnsignedInt
+  cycleId    Int      @map("cycle_id") @db.UnsignedInt
+  action     String   @db.VarChar(50)
+  targetType String   @map("target_type") @db.VarChar(50)
+  targetId   String?  @map("target_id") @db.VarChar(100)
+  beforeJson Json?    @map("before_json")
+  afterJson  Json?    @map("after_json")
+  reason     String?  @db.VarChar(500)
+  adminId    Int      @map("admin_id") @db.UnsignedInt
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  cycle EvalCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  @@index([cycleId, createdAt], map: "idx_eval_audit_cycle_time")
+  @@map("eval_audit_logs")
 }
