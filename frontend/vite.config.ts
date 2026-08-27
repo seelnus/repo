@@ -1,15 +1,17 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
+const apiProxyTarget = process.env.VITE_API_PROXY_TARGET || 'http://localhost:3100'
+
 export default defineConfig({
   plugins: [react()],
   server: {
     allowedHosts: ['hr.mmcb.top'],
     hmr: false,
-    // 本地开发：把 /api、/uploads 转发到后端容器（服务器上由 nginx 处理，此处不生效，无副作用）
+    // 本机默认转发到 localhost；Docker Compose 通过环境变量改为后端容器名。
     proxy: {
-      '/api': { target: 'http://app-backend:3100', changeOrigin: true },
-      '/uploads': { target: 'http://app-backend:3100', changeOrigin: true },
+      '/api': { target: apiProxyTarget, changeOrigin: true },
+      '/uploads': { target: apiProxyTarget, changeOrigin: true },
     },
   },
 })

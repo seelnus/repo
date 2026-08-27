@@ -57,6 +57,8 @@ services:
     restart: unless-stopped
     working_dir: /app
     command: sh -c "if [ ! -d node_modules/.bin ]; then npm ci --no-audit --no-fund; fi && npm run dev -- --host 0.0.0.0 --port 5174"
+    environment:
+      VITE_API_PROXY_TARGET: "http://app-backend:3100"
     ports:
       - "5174:5174"
     volumes:
