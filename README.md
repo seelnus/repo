@@ -104,11 +104,13 @@ ResponseComment  管理员点评
 
 ### 部署流程
 
-```bash
-# 服务器上（/www/wwwroot/survey-app）
-git pull
-docker compose up -d --build
-```
+生产发布、数据库迁移和回滚必须先阅读：
+
+[生产版本发布、本地备份与快速回滚设计](docs/superpowers/specs/2026-08-28-production-backup-rollback-design.md)
+
+禁止继续直接执行 `git pull && docker compose up -d --build`。每次正式发布前必须生成并验证数据库、uploads、MinIO、配置和 Git 版本组成的完整恢复点；新版本验收通过后才滚动清理，只保留最近 2 个已验证版本。
+
+当前正式发布/回滚脚本尚未实施。脚本和恢复演练完成前，应停止生产版本迭代，不能临场拼接数据库或 Docker 卷回滚命令。
 
 ### 端口映射
 
