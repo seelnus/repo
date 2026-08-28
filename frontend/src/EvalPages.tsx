@@ -873,10 +873,12 @@ function EvalTemplateTab({
             {schema.questions.map((question, index) => (
               <Card
                 key={question.id}
-                className="eval-question-editor"
+                className={`eval-question-editor ${question.type === "evaluation_score" ? "eval-score-question-editor" : ""}`}
                 title={
-                  <Space>
-                    <span>题目 {index + 1}</span>
+                  <Space className="eval-question-editor-title">
+                    <span className="eval-question-number">
+                      题目 {String(index + 1).padStart(2, "0")}
+                    </span>
                     <Tag
                       color={
                         question.type === "evaluation_text" ? "cyan" : "blue"
@@ -889,142 +891,115 @@ function EvalTemplateTab({
                   </Space>
                 }
                 extra={
-                  !readonly && (
-                    <Button
-                      type="link"
-                      danger
-                      onClick={() =>
-                        setSchema((current) => ({
-                          ...current,
-                          questions: current.questions.filter(
-                            (_, i) => i !== index,
-                          ),
-                        }))
-                      }
-                    >
-                      删除
-                    </Button>
-                  )
+                  <Space wrap className="eval-question-editor-actions">
+                    {question.type === "evaluation_score" && (
+                      <>
+                        <Checkbox
+                          checked={question.required}
+                          disabled={readonly}
+                          onChange={(event) =>
+                            updateQuestion(index, {
+                              required: event.target.checked,
+                            })
+                          }
+                        >
+                          必答
+                        </Checkbox>
+                        <Checkbox
+                          checked={question.countInScore}
+                          disabled={readonly}
+                          onChange={(event) =>
+                            updateQuestion(index, {
+                              countInScore: event.target.checked,
+                            })
+                          }
+                        >
+                          计入总分
+                        </Checkbox>
+                      </>
+                    )}
+                    {!readonly && (
+                      <Button
+                        type="link"
+                        danger
+                        onClick={() =>
+                          setSchema((current) => ({
+                            ...current,
+                            questions: current.questions.filter(
+                              (_, i) => i !== index,
+                            ),
+                          }))
+                        }
+                      >
+                        删除
+                      </Button>
+                    )}
+                  </Space>
                 }
               >
-                <Input
-                  value={question.label}
-                  disabled={readonly}
-                  placeholder="题目标题"
-                  onChange={(event) =>
-                    updateQuestion(index, { label: event.target.value })
-                  }
-                />
-                <Input.TextArea
-                  style={{ marginTop: 10 }}
-                  value={question.description}
-                  disabled={readonly}
-                  placeholder="补充说明（可选）"
-                  onChange={(event) =>
-                    updateQuestion(index, { description: event.target.value })
-                  }
-                />
-                <Select
-                  style={{ width: "100%", marginTop: 10 }}
-                  value={question.dimensionId}
-                  disabled={readonly}
-                  options={schema.dimensions.map((dimension) => ({
-                    label: dimension.name,
-                    value: dimension.id,
-                  }))}
-                  onChange={(dimensionId) =>
-                    updateQuestion(index, { dimensionId })
-                  }
-                />
                 {question.type === "evaluation_score" ? (
+                  <EvalScoreQuestionEditor
+                    question={question}
+                    dimensions={schema.dimensions}
+                    readonly={readonly}
+                    onChange={(patch) => updateQuestion(index, patch)}
+                  />
+                ) : (
                   <>
-                    <div className="eval-score-option-grid">
-                      {question.options.map((option, optionIndex) => (
-                        <div
-                          className="eval-score-option-row"
-                          key={option.score}
-                        >
-                          <span className="eval-score-badge">
-                            {option.score} 分
-                          </span>
-                          <Input
-                            value={option.label}
-                            disabled={readonly}
-                            onChange={(event) =>
-                              updateQuestion(index, {
-                                options: question.options.map((item, i) =>
-                                  i === optionIndex
-                                    ? { ...item, label: event.target.value }
-                                    : item,
-                                ),
-                              })
-                            }
-                          />
-                        </div>
-                      ))}
-                    </div>
                     <Input
-                      style={{ marginTop: 12 }}
-                      value={question.casePrompt}
+                      value={question.label}
                       disabled={readonly}
-                      addonBefore="案例提示"
+                      placeholder="题目标题"
+                      onChange={(event) =>
+                        updateQuestion(index, { label: event.target.value })
+                      }
+                    />
+                    <Input.TextArea
+                      style={{ marginTop: 10 }}
+                      value={question.description}
+                      disabled={readonly}
+                      placeholder="补充说明（可选）"
                       onChange={(event) =>
                         updateQuestion(index, {
-                          casePrompt: event.target.value,
+                          description: event.target.value,
                         })
                       }
                     />
-                    <div style={{ marginTop: 12 }}>
-                      <Typography.Text>
-                        选择后必须填写案例的分值：
-                      </Typography.Text>
-                      <Checkbox.Group
-                        disabled={readonly}
-                        value={question.caseRequiredScores}
-                        options={[0, 1, 2, 3, 4, 5].map((score) => ({
-                          label: `${score} 分`,
-                          value: score,
-                        }))}
-                        onChange={(values) =>
-                          updateQuestion(index, {
-                            caseRequiredScores: values as number[],
-                          })
-                        }
-                      />
-                    </div>
+                    <Select
+                      style={{ width: "100%", marginTop: 10 }}
+                      value={question.dimensionId}
+                      disabled={readonly}
+                      options={schema.dimensions.map((dimension) => ({
+                        label: dimension.name,
+                        value: dimension.id,
+                      }))}
+                      onChange={(dimensionId) =>
+                        updateQuestion(index, { dimensionId })
+                      }
+                    />
+                    <Alert
+                      style={{ marginTop: 12 }}
+                      type="info"
+                      showIcon
+                      message="多行文字反馈，最多 2000 字，不参与任何评分"
+                    />
                   </>
-                ) : (
-                  <Alert
-                    style={{ marginTop: 12 }}
-                    type="info"
-                    showIcon
-                    message="多行文字反馈，最多 2000 字，不参与任何评分"
-                  />
                 )}
-                <Space style={{ marginTop: 12 }}>
-                  <Checkbox
-                    checked={question.required}
-                    disabled={readonly}
-                    onChange={(event) =>
-                      updateQuestion(index, { required: event.target.checked })
-                    }
-                  >
-                    必答
-                  </Checkbox>
-                  {question.type === "evaluation_score" && (
+                {question.type === "evaluation_text" && (
+                  <Space style={{ marginTop: 12 }}>
                     <Checkbox
-                      checked={question.countInScore}
+                      checked={question.required}
                       disabled={readonly}
                       onChange={(event) =>
                         updateQuestion(index, {
-                          countInScore: event.target.checked,
+                          required: event.target.checked,
                         })
                       }
                     >
-                      计入总分
+                      必答
                     </Checkbox>
-                  )}
-                </Space>
+                  </Space>
+                )}
               </Card>
             ))}
             {!readonly && (
@@ -1052,6 +1027,166 @@ function EvalTemplateTab({
           placeholder="如：2026 价值观环评模板"
         />
       </Modal>
+    </div>
+  );
+}
+
+function EvalScoreQuestionEditor({
+  question,
+  dimensions,
+  readonly,
+  onChange,
+}: {
+  question: EvalScoreQuestion;
+  dimensions: EvalTemplate["dimensions"];
+  readonly: boolean;
+  onChange: (patch: Partial<EvalScoreQuestion>) => void;
+}) {
+  const requiredScores = question.caseRequiredScores || [];
+
+  function setCaseRequired(score: number, checked: boolean) {
+    const nextScores = checked
+      ? Array.from(new Set([...requiredScores, score])).sort((a, b) => a - b)
+      : requiredScores.filter((item) => item !== score);
+    onChange({ caseRequiredScores: nextScores });
+  }
+
+  return (
+    <div className="eval-score-editor">
+      <section className="eval-score-editor-section">
+        <div className="eval-score-editor-section-heading">
+          <Typography.Text strong>题目内容</Typography.Text>
+          <Typography.Text type="secondary">
+            员工填写端会按此内容展示
+          </Typography.Text>
+        </div>
+        <div className="eval-score-editor-fields">
+          <div className="eval-score-editor-field eval-score-editor-field-full">
+            <span>
+              <span className="eval-score-editor-required">*</span> 题目标题
+            </span>
+            <Input
+              aria-label="题目标题"
+              value={question.label}
+              disabled={readonly}
+              placeholder="请输入评分题标题"
+              onChange={(event) => onChange({ label: event.target.value })}
+            />
+          </div>
+          <div className="eval-score-editor-field eval-score-editor-field-full">
+            <span>补充说明</span>
+            <Input.TextArea
+              aria-label="补充说明"
+              autoSize={{ minRows: 2, maxRows: 4 }}
+              value={question.description}
+              disabled={readonly}
+              placeholder="补充评分口径或填写说明（可选）"
+              onChange={(event) =>
+                onChange({ description: event.target.value })
+              }
+            />
+          </div>
+          <div className="eval-score-editor-field">
+            <span>所属维度</span>
+            <Select
+              aria-label="所属维度"
+              value={question.dimensionId}
+              disabled={readonly}
+              options={dimensions.map((dimension) => ({
+                label: dimension.name,
+                value: dimension.id,
+              }))}
+              onChange={(dimensionId) => onChange({ dimensionId })}
+            />
+          </div>
+          <div className="eval-score-editor-field">
+            <span>题型</span>
+            <Input aria-label="题型" value="评分单选题" disabled />
+          </div>
+        </div>
+      </section>
+
+      <section className="eval-score-editor-section">
+        <div className="eval-score-editor-section-heading">
+          <Typography.Text strong>评分行为选项</Typography.Text>
+          <Typography.Text type="secondary">
+            分值固定为 0–5 分，只需编辑行为描述
+          </Typography.Text>
+        </div>
+        <div className="eval-score-editor-option-heading" aria-hidden="true">
+          <span>分值</span>
+          <span>行为描述</span>
+          <span>案例要求</span>
+        </div>
+        <div className="eval-score-editor-options">
+          {question.options.map((option, optionIndex) => {
+            const requiresCase = requiredScores.includes(option.score);
+            return (
+              <div
+                className={`eval-score-editor-option ${requiresCase ? "requires-case" : ""}`}
+                key={option.score}
+              >
+                <span className="eval-score-editor-badge">
+                  {option.score} 分
+                </span>
+                <Input
+                  aria-label={`${option.score} 分行为描述`}
+                  value={option.label}
+                  disabled={readonly}
+                  placeholder="请输入该分值对应的行为描述"
+                  onChange={(event) =>
+                    onChange({
+                      options: question.options.map((item, i) =>
+                        i === optionIndex
+                          ? { ...item, label: event.target.value }
+                          : item,
+                      ),
+                    })
+                  }
+                />
+                <Checkbox
+                  checked={requiresCase}
+                  disabled={readonly}
+                  onChange={(event) =>
+                    setCaseRequired(option.score, event.target.checked)
+                  }
+                >
+                  必须填案例
+                </Checkbox>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="eval-score-editor-section">
+        <div className="eval-score-editor-section-heading">
+          <Typography.Text strong>案例填写设置</Typography.Text>
+        </div>
+        <div className="eval-score-editor-case-settings">
+          <div className="eval-score-editor-field">
+            <span>案例输入提示</span>
+            <Input
+              aria-label="案例输入提示"
+              value={question.casePrompt}
+              disabled={readonly}
+              placeholder="请填写具体案例"
+              onChange={(event) =>
+                onChange({ casePrompt: event.target.value })
+              }
+            />
+          </div>
+          <Alert
+            type="info"
+            showIcon
+            message={
+              requiredScores.length
+                ? `已设置：${requiredScores.join("、")} 分必须填写案例`
+                : "当前没有分值要求填写案例"
+            }
+          />
+        </div>
+      </section>
     </div>
   );
 }
@@ -2696,6 +2831,11 @@ function FillTaskView({
     );
   }
   const questions: any[] = task.survey?.schemaJson?.questions || [];
+  const dimensions: Array<{ id: string; name: string }> =
+    task.survey?.schemaJson?.dimensions || [];
+  const dimensionNames = new Map<string, string>(
+    dimensions.map((dimension) => [dimension.id, dimension.name]),
+  );
 
   async function submit() {
     for (const q of questions) {
@@ -2772,18 +2912,37 @@ function FillTaskView({
         }
       >
         {questions.length === 0 && <Empty description="这份问卷还没有题目" />}
-        {questions.map((q) => (
-          <div key={q.id} style={{ marginBottom: 20 }}>
+        {questions.map((q, questionIndex) => (
+          <div
+            key={q.id}
+            className={`eval-fill-question-block ${q.type === "evaluation_score" ? "eval-fill-score-question-block" : ""}`}
+          >
             {q.type !== "description" ? (
-              <div style={{ marginBottom: 8, fontWeight: 500 }}>
-                {q.label}
-                {q.required && <span style={{ color: "red" }}> *</span>}
-              </div>
+              <>
+                {q.type === "evaluation_score" && (
+                  <div className="eval-score-fill-meta">
+                    <span>
+                      第 {questionIndex + 1} 题 / 共 {questions.length} 题
+                    </span>
+                    {dimensionNames.get(q.dimensionId) && (
+                      <Tag color="blue">
+                        {dimensionNames.get(q.dimensionId)}
+                      </Tag>
+                    )}
+                  </div>
+                )}
+                <div className="eval-fill-question-title">
+                  {q.required && (
+                    <span className="eval-fill-required-mark">*</span>
+                  )}
+                  {q.label}
+                </div>
+              </>
             ) : (
               <div style={{ marginBottom: 8, color: "#555" }}>{q.label}</div>
             )}
             {q.description && (
-              <div style={{ color: "#999", marginBottom: 8 }}>
+              <div className="eval-fill-question-description">
                 {q.description}
               </div>
             )}
@@ -2842,35 +3001,62 @@ function EvalQuestionField({
   const caseRequired = q.caseRequiredScores?.includes(Number(selectedScore));
   return (
     <div className="eval-fill-question">
-      <div className="eval-behavior-options">
-        {(q.options || []).map((option) => (
-          <button
-            type="button"
-            key={option.score}
-            className={`eval-behavior-option ${selectedScore === option.score ? "selected" : ""}`}
-            onClick={() =>
-              onChange({ score: option.score, caseText: value?.caseText || "" })
-            }
-          >
-            <span className="eval-behavior-score">{option.score} 分</span>
-            <span>{option.label}</span>
-          </button>
-        ))}
-      </div>
-      <Input.TextArea
-        rows={3}
-        style={{ marginTop: 12 }}
-        value={value?.caseText || ""}
-        placeholder={`${q.casePrompt || "请填写具体案例"}${caseRequired ? "（当前分值必填）" : "（选填）"}`}
-        status={
-          caseRequired && !String(value?.caseText || "").trim()
-            ? "warning"
-            : undefined
-        }
+      <Radio.Group
+        aria-label={`${q.label}评分`}
+        className="eval-score-fill-options"
+        value={selectedScore}
         onChange={(event) =>
-          onChange({ score: selectedScore, caseText: event.target.value })
+          onChange({
+            score: event.target.value,
+            caseText: value?.caseText || "",
+          })
         }
-      />
+      >
+        {(q.options || []).map((option) => (
+          <Radio
+            key={option.score}
+            value={option.score}
+            className="eval-score-fill-option"
+          >
+            <span className="eval-score-fill-option-content">
+              <span className="eval-score-fill-badge">{option.score} 分</span>
+              <span className="eval-score-fill-behavior">{option.label}</span>
+            </span>
+          </Radio>
+        ))}
+      </Radio.Group>
+      {caseRequired && (
+        <div className="eval-score-fill-case-panel">
+          <div className="eval-score-fill-case-heading">
+            <Typography.Text strong>请填写具体案例</Typography.Text>
+            <Tag color="orange">当前分值必填</Tag>
+          </div>
+          <Input.TextArea
+            aria-label="具体案例"
+            rows={3}
+            showCount
+            value={value?.caseText || ""}
+            placeholder={
+              q.casePrompt ||
+              "请描述具体场景、员工行为及产生的影响，让评价更有依据"
+            }
+            status={
+              !String(value?.caseText || "").trim() ? "warning" : undefined
+            }
+            onChange={(event) =>
+              onChange({ score: selectedScore, caseText: event.target.value })
+            }
+          />
+          {!String(value?.caseText || "").trim() && (
+            <Typography.Text
+              type="warning"
+              className="eval-score-fill-case-warning"
+            >
+              当前分值需要填写具体案例
+            </Typography.Text>
+          )}
+        </div>
+      )}
     </div>
   );
 }
