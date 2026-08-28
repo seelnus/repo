@@ -64,22 +64,30 @@ interface ContactLite {
   position?: string | null;
   tags?: string | null;
 }
+interface EvalQuestionBase {
+  id: string;
+  label: string;
+  description?: string;
+  dimensionId: string;
+  required: boolean;
+}
+interface EvalScoreQuestion extends EvalQuestionBase {
+  type: "evaluation_score";
+  countInScore: boolean;
+  options: Array<{ score: number; label: string }>;
+  casePrompt?: string;
+  caseRequiredScores: number[];
+}
+interface EvalTextQuestion extends EvalQuestionBase {
+  type: "evaluation_text";
+  maxLength: 2000;
+}
+type EvalQuestion = EvalScoreQuestion | EvalTextQuestion;
 interface EvalTemplate {
   version: 2;
   kind: "evaluation";
   dimensions: Array<{ id: string; name: string; order: number }>;
-  questions: Array<{
-    id: string;
-    type: "evaluation_score";
-    label: string;
-    description?: string;
-    dimensionId: string;
-    required: boolean;
-    countInScore: boolean;
-    options: Array<{ score: number; label: string }>;
-    casePrompt?: string;
-    caseRequiredScores: number[];
-  }>;
+  questions: EvalQuestion[];
 }
 interface EvalTemplateRow {
   id: number;
@@ -734,12 +742,12 @@ function EvalTemplateTab({
 
   function updateQuestion(
     index: number,
-    patch: Partial<EvalTemplate["questions"][number]>,
+    patch: Partial<EvalScoreQuestion> | Partial<EvalTextQuestion>,
   ) {
     setSchema((current) => ({
       ...current,
       questions: current.questions.map((question, i) =>
-        i === index ? { ...question, ...patch } : question,
+        i === index ? ({ ...question, ...patch } as EvalQuestion) : question,
       ),
     }));
   }
@@ -759,7 +767,7 @@ function EvalTemplateTab({
     }));
   }
 
-  function addQuestion() {
+  function addScoreQuestion() {
     const dimensionId = schema.dimensions[0]?.id;
     if (!dimensionId) return message.warning("请先添加维度");
     const id = `question-${Date.now().toString(36)}`;
@@ -781,6 +789,27 @@ function EvalTemplateTab({
           })),
           casePrompt: "请填写具体案例",
           caseRequiredScores: [0, 4, 5],
+        },
+      ],
+    }));
+  }
+
+  function addTextQuestion() {
+    const dimensionId = schema.dimensions[0]?.id;
+    if (!dimensionId) return message.warning("请先添加维度");
+    const id = `text-question-${Date.now().toString(36)}`;
+    setSchema((current) => ({
+      ...current,
+      questions: [
+        ...current.questions,
+        {
+          id,
+          type: "evaluation_text",
+          label: "新填空题",
+          description: "",
+          dimensionId,
+          required: false,
+          maxLength: 2000,
         },
       ],
     }));
@@ -845,7 +874,20 @@ function EvalTemplateTab({
               <Card
                 key={question.id}
                 className="eval-question-editor"
-                title={`题目 ${index + 1}`}
+                title={
+                  <Space>
+                    <span>题目 {index + 1}</span>
+                    <Tag
+                      color={
+                        question.type === "evaluation_text" ? "cyan" : "blue"
+                      }
+                    >
+                      {question.type === "evaluation_text"
+                        ? "填空题"
+                        : "评分题"}
+                    </Tag>
+                  </Space>
+                }
                 extra={
                   !readonly && (
                     <Button
@@ -894,53 +936,71 @@ function EvalTemplateTab({
                     updateQuestion(index, { dimensionId })
                   }
                 />
-                <div className="eval-score-option-grid">
-                  {question.options.map((option, optionIndex) => (
-                    <div className="eval-score-option-row" key={option.score}>
-                      <span className="eval-score-badge">
-                        {option.score} 分
-                      </span>
-                      <Input
-                        value={option.label}
+                {question.type === "evaluation_score" ? (
+                  <>
+                    <div className="eval-score-option-grid">
+                      {question.options.map((option, optionIndex) => (
+                        <div
+                          className="eval-score-option-row"
+                          key={option.score}
+                        >
+                          <span className="eval-score-badge">
+                            {option.score} 分
+                          </span>
+                          <Input
+                            value={option.label}
+                            disabled={readonly}
+                            onChange={(event) =>
+                              updateQuestion(index, {
+                                options: question.options.map((item, i) =>
+                                  i === optionIndex
+                                    ? { ...item, label: event.target.value }
+                                    : item,
+                                ),
+                              })
+                            }
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <Input
+                      style={{ marginTop: 12 }}
+                      value={question.casePrompt}
+                      disabled={readonly}
+                      addonBefore="案例提示"
+                      onChange={(event) =>
+                        updateQuestion(index, {
+                          casePrompt: event.target.value,
+                        })
+                      }
+                    />
+                    <div style={{ marginTop: 12 }}>
+                      <Typography.Text>
+                        选择后必须填写案例的分值：
+                      </Typography.Text>
+                      <Checkbox.Group
                         disabled={readonly}
-                        onChange={(event) =>
+                        value={question.caseRequiredScores}
+                        options={[0, 1, 2, 3, 4, 5].map((score) => ({
+                          label: `${score} 分`,
+                          value: score,
+                        }))}
+                        onChange={(values) =>
                           updateQuestion(index, {
-                            options: question.options.map((item, i) =>
-                              i === optionIndex
-                                ? { ...item, label: event.target.value }
-                                : item,
-                            ),
+                            caseRequiredScores: values as number[],
                           })
                         }
                       />
                     </div>
-                  ))}
-                </div>
-                <Input
-                  style={{ marginTop: 12 }}
-                  value={question.casePrompt}
-                  disabled={readonly}
-                  addonBefore="案例提示"
-                  onChange={(event) =>
-                    updateQuestion(index, { casePrompt: event.target.value })
-                  }
-                />
-                <div style={{ marginTop: 12 }}>
-                  <Typography.Text>选择后必须填写案例的分值：</Typography.Text>
-                  <Checkbox.Group
-                    disabled={readonly}
-                    value={question.caseRequiredScores}
-                    options={[0, 1, 2, 3, 4, 5].map((score) => ({
-                      label: `${score} 分`,
-                      value: score,
-                    }))}
-                    onChange={(values) =>
-                      updateQuestion(index, {
-                        caseRequiredScores: values as number[],
-                      })
-                    }
+                  </>
+                ) : (
+                  <Alert
+                    style={{ marginTop: 12 }}
+                    type="info"
+                    showIcon
+                    message="多行文字反馈，最多 2000 字，不参与任何评分"
                   />
-                </div>
+                )}
                 <Space style={{ marginTop: 12 }}>
                   <Checkbox
                     checked={question.required}
@@ -951,24 +1011,31 @@ function EvalTemplateTab({
                   >
                     必答
                   </Checkbox>
-                  <Checkbox
-                    checked={question.countInScore}
-                    disabled={readonly}
-                    onChange={(event) =>
-                      updateQuestion(index, {
-                        countInScore: event.target.checked,
-                      })
-                    }
-                  >
-                    计入总分
-                  </Checkbox>
+                  {question.type === "evaluation_score" && (
+                    <Checkbox
+                      checked={question.countInScore}
+                      disabled={readonly}
+                      onChange={(event) =>
+                        updateQuestion(index, {
+                          countInScore: event.target.checked,
+                        })
+                      }
+                    >
+                      计入总分
+                    </Checkbox>
+                  )}
                 </Space>
               </Card>
             ))}
             {!readonly && (
-              <Button block type="dashed" onClick={addQuestion}>
-                添加计分题
-              </Button>
+              <Space.Compact block>
+                <Button block type="dashed" onClick={addScoreQuestion}>
+                  添加评分题
+                </Button>
+                <Button block type="dashed" onClick={addTextQuestion}>
+                  添加填空题
+                </Button>
+              </Space.Compact>
             )}
           </div>
         </div>
@@ -1571,6 +1638,22 @@ function EvalResultsPanel({ cycle }: { cycle: Cycle }) {
 
 function EvalReportContent({ report }: { report: any }) {
   const result = report.result;
+  const feedbackGroups = Array.from(
+    (report.textFeedback || [])
+      .reduce((groups: Map<string, any>, item: any) => {
+        const key = `${item.dimensionId}:${item.questionId}`;
+        const group = groups.get(key) || {
+          key,
+          dimensionName: item.dimensionName,
+          questionLabel: item.questionLabel,
+          items: [],
+        };
+        group.items.push(item);
+        groups.set(key, group);
+        return groups;
+      }, new Map<string, any>())
+      .values(),
+  );
   return (
     <div>
       <Row gutter={[16, 16]}>
@@ -1651,7 +1734,39 @@ function EvalReportContent({ report }: { report: any }) {
           >
             <Tag>{TYPE_LABEL[item.relationType] || item.relationType}</Tag>
             <Tag color="blue">{item.score} 分</Tag>
+            <Typography.Text strong>{item.questionLabel}</Typography.Text>
             <div style={{ marginTop: 8 }}>{item.caseText}</div>
+          </Card>
+        ))
+      )}
+      <Typography.Title level={5} style={{ marginTop: 24 }}>
+        文字反馈
+      </Typography.Title>
+      {!feedbackGroups.length ? (
+        <Empty description="暂无文字反馈" />
+      ) : (
+        feedbackGroups.map((group: any) => (
+          <Card
+            size="small"
+            key={group.key}
+            title={`${group.dimensionName || "未分组"} · ${group.questionLabel}`}
+            style={{ marginBottom: 12 }}
+          >
+            {group.items.map((item: any, index: number) => (
+              <div
+                key={`${item.questionId}-${index}`}
+                style={{
+                  marginBottom: index === group.items.length - 1 ? 0 : 12,
+                }}
+              >
+                <Tag color="cyan">
+                  {item.relationType === "peer"
+                    ? "同事"
+                    : TYPE_LABEL[item.relationType] || item.relationType}
+                </Tag>
+                <span style={{ whiteSpace: "pre-wrap" }}>{item.text}</span>
+              </div>
+            ))}
           </Card>
         ))
       )}
@@ -2188,16 +2303,14 @@ function RelationsTab({ cycleId }: { cycleId: Cycle }) {
   useEffect(() => {
     const request =
       cycleId.version && cycleId.version >= 2
-        ? http
-            .get(`/admin/eval/cycles/${cid}/participants`)
-            .then((response) =>
-              response.data.map((item: any) => ({
-                id: item.contactId,
-                name: item.nameSnapshot,
-                department: item.groupName,
-                position: item.positionSnapshot,
-              })),
-            )
+        ? http.get(`/admin/eval/cycles/${cid}/participants`).then((response) =>
+            response.data.map((item: any) => ({
+              id: item.contactId,
+              name: item.nameSnapshot,
+              department: item.groupName,
+              position: item.positionSnapshot,
+            })),
+          )
         : http.get("/admin/contacts").then((response) => response.data || []);
     request.then(setContacts).catch(() => {});
   }, [cid, cycleId.version]);
@@ -2605,6 +2718,19 @@ function FillTaskView({
         }
         continue;
       }
+      if (q.type === "evaluation_text") {
+        const text =
+          typeof answers[q.id] === "string" ? answers[q.id].trim() : "";
+        if (q.required && !text) {
+          message.warning(`请填写：${q.label}`);
+          return;
+        }
+        if (text.length > (q.maxLength || 2000)) {
+          message.warning(`“${q.label}”最多填写 ${q.maxLength || 2000} 个字符`);
+          return;
+        }
+        continue;
+      }
       if (q.required && q.type !== "description") {
         const v = answers[q.id];
         if (
@@ -2667,6 +2793,24 @@ function FillTaskView({
                 value={answers[q.id]}
                 onChange={(v) => setAnswers((a) => ({ ...a, [q.id]: v }))}
               />
+            ) : q.type === "evaluation_text" ? (
+              <Input.TextArea
+                rows={5}
+                showCount
+                maxLength={q.maxLength || 2000}
+                value={answers[q.id] || ""}
+                placeholder={
+                  q.required
+                    ? "请输入文字反馈（必填）"
+                    : "请输入文字反馈（选填）"
+                }
+                onChange={(event) =>
+                  setAnswers((current) => ({
+                    ...current,
+                    [q.id]: event.target.value,
+                  }))
+                }
+              />
             ) : (
               <QuestionField
                 q={q}
@@ -2690,7 +2834,7 @@ function EvalQuestionField({
   value,
   onChange,
 }: {
-  q: EvalTemplate["questions"][number];
+  q: EvalScoreQuestion;
   value: any;
   onChange: (value: any) => void;
 }) {

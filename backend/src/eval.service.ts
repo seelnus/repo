@@ -989,8 +989,8 @@ export class EvalService {
       throw new BadRequestException('请设置合法的开始和截止时间');
     const templateRow = await this.getTemplate(cycle.templateSurveyId);
     const template = this.parseTemplate(templateRow.schemaJson);
-    if (!template.questions.some((question) => question.countInScore))
-      throw new BadRequestException('模板至少需要一道计分题');
+    if (!template.questions.length)
+      throw new BadRequestException('模板至少需要一道题目');
     const participantCount = await this.prisma.evalCycleParticipant.count({
       where: { cycleId },
     });
@@ -1244,15 +1244,30 @@ export class EvalService {
     const relationMap = new Map(
       relations.map((relation) => [relation.responseId, relation]),
     );
+    const template = this.parseTemplate(
+      cycle.templateSnapshotJson ||
+        (cycle.templateSurveyId
+          ? (await this.getTemplate(cycle.templateSurveyId)).schemaJson
+          : null),
+    );
+    const questionMap = new Map(
+      template.questions.map((question) => [question.id, question]),
+    );
+    const dimensionMap = new Map(
+      template.dimensions.map((dimension) => [dimension.id, dimension.name]),
+    );
     const cases = responses.flatMap((response) =>
       Object.entries(response.answersJson as Record<string, unknown>).flatMap(
         ([questionId, value]) => {
+          const question = questionMap.get(questionId);
+          if (question?.type !== 'evaluation_score') return [];
           if (!value || typeof value !== 'object') return [];
           const answer = value as EvalAnswer;
           if (!String(answer.caseText || '').trim()) return [];
           return [
             {
               questionId,
+              questionLabel: question.label,
               score: answer.score,
               caseText: String(answer.caseText),
               relationType: relationMap.get(response.id)?.relationType,
@@ -1261,7 +1276,26 @@ export class EvalService {
         },
       ),
     );
-    return { cycle, participant, result, cases };
+    const textFeedback = responses.flatMap((response) =>
+      template.questions.flatMap((question) => {
+        if (question.type !== 'evaluation_text') return [];
+        const value = (response.answersJson as Record<string, unknown>)[
+          question.id
+        ];
+        if (typeof value !== 'string' || !value.trim()) return [];
+        return [
+          {
+            questionId: question.id,
+            questionLabel: question.label,
+            dimensionId: question.dimensionId,
+            dimensionName: dimensionMap.get(question.dimensionId) || '',
+            relationType: relationMap.get(response.id)?.relationType,
+            text: value.trim(),
+          },
+        ];
+      }),
+    );
+    return { cycle, participant, result, cases, textFeedback };
   }
 
   async listRawResponses(cycleId: number) {
@@ -1629,6 +1663,7 @@ export class EvalService {
     if (rel.responseId)
       throw new ConflictException('该任务你已提交，无需重复填写');
 
+    let validatedAnswers = answersJson;
     if (rel.cycle.version >= 2) {
       const survey = await this.prisma.survey.findUnique({
         where: { id: rel.surveyId },
@@ -1637,7 +1672,7 @@ export class EvalService {
       const template = this.parseTemplate(
         rel.cycle.templateSnapshotJson || survey.schemaJson,
       );
-      this.validateEvalAnswers(template, answersJson);
+      validatedAnswers = this.validateEvalAnswers(template, answersJson);
     }
 
     const result = await this.prisma.$transaction(async (tx) => {
@@ -1648,7 +1683,7 @@ export class EvalService {
           rateeContactId: rel.rateeContactId,
           evalRelationId: rel.id,
           startedAt: toDateOrNull(startedAtValue),
-          answersJson: answersJson as Prisma.InputJsonValue,
+          answersJson: validatedAnswers as Prisma.InputJsonValue,
         },
       });
       const updated = await tx.evalRelation.updateMany({
@@ -1683,12 +1718,39 @@ export class EvalService {
   private validateEvalAnswers(
     template: EvalTemplate,
     answers: Record<string, unknown>,
-  ) {
+  ): Record<string, unknown> {
+    if (!answers || typeof answers !== 'object' || Array.isArray(answers))
+      throw new BadRequestException('答卷格式不正确');
+    const questionIds = new Set(
+      template.questions.map((question) => question.id),
+    );
+    const unknownQuestionId = Object.keys(answers).find(
+      (questionId) => !questionIds.has(questionId),
+    );
+    if (unknownQuestionId)
+      throw new BadRequestException(`答卷包含无效题目：${unknownQuestionId}`);
+    const normalized: Record<string, unknown> = {};
     for (const question of template.questions) {
       const value = answers[question.id];
       if (value === undefined || value === null || value === '') {
         if (question.required)
           throw new BadRequestException(`请填写：${question.label}`);
+        continue;
+      }
+      if (question.type === 'evaluation_text') {
+        if (typeof value !== 'string')
+          throw new BadRequestException(`${question.label} 的答案格式不正确`);
+        const text = value.trim();
+        if (!text) {
+          if (question.required)
+            throw new BadRequestException(`请填写：${question.label}`);
+          continue;
+        }
+        if (text.length > question.maxLength)
+          throw new BadRequestException(
+            `${question.label} 最多填写 ${question.maxLength} 个字符`,
+          );
+        normalized[question.id] = text;
         continue;
       }
       if (typeof value !== 'object')
@@ -1703,7 +1765,12 @@ export class EvalService {
       ) {
         throw new BadRequestException(`请填写“${question.label}”的案例说明`);
       }
+      normalized[question.id] = {
+        score,
+        caseText: String(answer.caseText || '').trim(),
+      };
     }
+    return normalized;
   }
 
   // ── 结果导出（Excel，三分表：自评/他评/领导评价，答案按题拆列）──
@@ -1805,6 +1872,12 @@ export class EvalService {
       this.listRawResponses(cycleId),
     ]);
     const workbook = new ExcelJS.Workbook();
+    const scoreQuestions = template.questions.filter(
+      (question) => question.type === 'evaluation_score',
+    );
+    const textQuestions = template.questions.filter(
+      (question) => question.type === 'evaluation_text',
+    );
 
     const summarySheet = workbook.addWorksheet('员工汇总');
     summarySheet.columns = [
@@ -1883,18 +1956,28 @@ export class EvalService {
       { header: '开始时间', key: 'startedAt', width: 22 },
       { header: '提交时间', key: 'submittedAt', width: 22 },
       { header: '有效状态', key: 'validStatus', width: 12 },
-      ...template.questions.flatMap((question, index) => [
-        {
-          header: `Q${index + 1} ${question.label}（分值）`,
-          key: `score_${question.id}`,
-          width: 24,
-        },
-        {
-          header: `Q${index + 1} ${question.label}（案例）`,
-          key: `case_${question.id}`,
-          width: 40,
-        },
-      ]),
+      ...template.questions.flatMap((question, index) =>
+        question.type === 'evaluation_score'
+          ? [
+              {
+                header: `Q${index + 1} ${question.label}（分值）`,
+                key: `score_${question.id}`,
+                width: 24,
+              },
+              {
+                header: `Q${index + 1} ${question.label}（案例）`,
+                key: `case_${question.id}`,
+                width: 40,
+              },
+            ]
+          : [
+              {
+                header: `Q${index + 1} ${question.label}（文字反馈）`,
+                key: `text_${question.id}`,
+                width: 60,
+              },
+            ],
+      ),
     ];
     rawSheet.getRow(1).font = { bold: true };
     const caseSheet = workbook.addWorksheet('案例说明');
@@ -1907,6 +1990,19 @@ export class EvalService {
       { header: '案例', key: 'caseText', width: 60 },
     ];
     caseSheet.getRow(1).font = { bold: true };
+    const feedbackSheet = workbook.addWorksheet('文字反馈');
+    feedbackSheet.columns = [
+      { header: '被评人', key: 'ratee', width: 16 },
+      { header: '部门', key: 'department', width: 18 },
+      { header: '评价关系', key: 'relationType', width: 12 },
+      { header: '维度', key: 'dimension', width: 16 },
+      { header: '题目', key: 'question', width: 32 },
+      { header: '反馈内容', key: 'text', width: 60 },
+    ];
+    feedbackSheet.getRow(1).font = { bold: true };
+    const participantByContact = new Map(
+      resultRows.map((participant) => [participant.contactId, participant]),
+    );
     for (const row of rawRows) {
       const answers = row.answersJson as Record<string, unknown>;
       const values: Record<string, unknown> = {
@@ -1918,7 +2014,7 @@ export class EvalService {
         submittedAt: formatDateTime(row.submittedAt),
         validStatus: row.validStatus === 'valid' ? '有效' : '已作废',
       };
-      for (const question of template.questions) {
+      for (const question of scoreQuestions) {
         const answer = answers[question.id] as EvalAnswer | undefined;
         values[`score_${question.id}`] = answer?.score ?? '';
         values[`case_${question.id}`] = answer?.caseText || '';
@@ -1930,6 +2026,25 @@ export class EvalService {
             question: question.label,
             score: answer?.score,
             caseText: answer?.caseText,
+          });
+        }
+      }
+      for (const question of textQuestions) {
+        const answer = answers[question.id];
+        const text = typeof answer === 'string' ? answer.trim() : '';
+        values[`text_${question.id}`] = text;
+        if (text) {
+          const rateeContactId = row.relation?.rateeContactId;
+          const participant = rateeContactId
+            ? participantByContact.get(rateeContactId)
+            : undefined;
+          feedbackSheet.addRow({
+            ratee: row.relation?.rateeName || '',
+            department: participant?.departmentSnapshot || '',
+            relationType: relationLabel(row.relation?.relationType),
+            dimension: dimensionName.get(question.dimensionId) || '',
+            question: question.label,
+            text,
           });
         }
       }

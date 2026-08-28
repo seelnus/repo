@@ -36,7 +36,10 @@ export function calculateEmployeeScore(
   responses: EvalResponseForScoring[],
 ): EvalScoreResult {
   const questionScores = template.questions
-    .filter((question) => question.countInScore)
+    .filter(
+      (question) =>
+        question.type === 'evaluation_score' && question.countInScore,
+    )
     .map((question) => {
       const all: number[] = [];
       const self: number[] = [];
