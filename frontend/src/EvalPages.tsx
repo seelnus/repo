@@ -2480,19 +2480,19 @@ function RelationsTab({
   const [saving, setSaving] = useState(false);
   const relType = Form.useWatch("relationType", form);
   const relationRequestId = useRef(0);
+  const loadedRelationKey = useRef("");
 
-  async function load(signal?: AbortSignal) {
+  async function load() {
     const requestId = relationRequestId.current + 1;
     relationRequestId.current = requestId;
     setLoading(true);
     try {
       const { data } = await http.get(`/admin/eval/cycles/${cid}/relations`, {
-        signal,
         timeout: 10000,
       });
       if (requestId === relationRequestId.current) setRows(data || []);
     } catch {
-      if (!signal?.aborted && requestId === relationRequestId.current) {
+      if (requestId === relationRequestId.current) {
         message.error("关系明细加载失败，请重试");
       }
     } finally {
@@ -2500,12 +2500,10 @@ function RelationsTab({
     }
   }
   useEffect(() => {
-    const controller = new AbortController();
-    load(controller.signal);
-    return () => {
-      relationRequestId.current += 1;
-      controller.abort();
-    };
+    const loadKey = `${cid}:${refreshKey}`;
+    if (loadedRelationKey.current === loadKey) return;
+    loadedRelationKey.current = loadKey;
+    load();
   }, [cid, refreshKey]);
   useEffect(() => {
     const request =
