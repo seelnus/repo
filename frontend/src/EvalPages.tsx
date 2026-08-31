@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import dayjs from "dayjs";
 import {
@@ -1192,6 +1192,11 @@ function EvalScoreQuestionEditor({
 }
 
 function EvalPeopleTab({ cycle }: { cycle: Cycle }) {
+  const [relationRevision, setRelationRevision] = useState(0);
+  const notifyRelationsChanged = () => {
+    setRelationRevision((revision) => revision + 1);
+  };
+
   return (
     <Tabs
       items={[
@@ -1210,11 +1215,21 @@ function EvalPeopleTab({ cycle }: { cycle: Cycle }) {
           label: "关系复核",
           children: (
             <div>
-              <GenerateTab cycleId={cycle.id} />
+              <GenerateTab
+                cycleId={cycle.id}
+                onRelationsChanged={notifyRelationsChanged}
+              />
               <Divider />
-              <ReviewTab cycleId={cycle.id} />
+              <ReviewTab
+                cycleId={cycle.id}
+                refreshKey={relationRevision}
+              />
               <Divider />
-              <RelationsTab cycleId={cycle} />
+              <RelationsTab
+                cycleId={cycle}
+                refreshKey={relationRevision}
+                onRelationsChanged={notifyRelationsChanged}
+              />
             </div>
           ),
         },
@@ -2029,7 +2044,12 @@ function LegacyEvalCycleDetail() {
   const { message } = AntApp.useApp();
   const [cycle, setCycle] = useState<Cycle | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
+  const [relationRevision, setRelationRevision] = useState(0);
   const fillUrl = `${location.origin}/eval-fill`;
+
+  const notifyRelationsChanged = () => {
+    setRelationRevision((revision) => revision + 1);
+  };
 
   async function loadCycle() {
     const { data } = await http.get(`/admin/eval/cycles/${cycleId}`);
@@ -2112,17 +2132,33 @@ function LegacyEvalCycleDetail() {
           {
             key: "generate",
             label: "② 生成关系",
-            children: <GenerateTab cycleId={cycleId} />,
+            children: (
+              <GenerateTab
+                cycleId={cycleId}
+                onRelationsChanged={notifyRelationsChanged}
+              />
+            ),
           },
           {
             key: "review",
             label: "③ 复核列表",
-            children: <ReviewTab cycleId={cycleId} />,
+            children: (
+              <ReviewTab
+                cycleId={cycleId}
+                refreshKey={relationRevision}
+              />
+            ),
           },
           {
             key: "relations",
             label: "④ 关系明细 / 人工配置",
-            children: <RelationsTab cycleId={cycle} />,
+            children: (
+              <RelationsTab
+                cycleId={cycle}
+                refreshKey={relationRevision}
+                onRelationsChanged={notifyRelationsChanged}
+              />
+            ),
           },
         ]}
       />
@@ -2215,7 +2251,13 @@ function ConfigTab({ cycle, onSaved }: { cycle: Cycle; onSaved: () => void }) {
   );
 }
 
-function GenerateTab({ cycleId }: { cycleId: number }) {
+function GenerateTab({
+  cycleId,
+  onRelationsChanged,
+}: {
+  cycleId: number;
+  onRelationsChanged?: () => void;
+}) {
   const { message } = AntApp.useApp();
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<any>(null);
@@ -2228,6 +2270,7 @@ function GenerateTab({ cycleId }: { cycleId: number }) {
       );
       setReport(data);
       message.success("已生成");
+      onRelationsChanged?.();
     } catch (e: any) {
       message.error(e.response?.data?.message || "生成失败");
     } finally {
@@ -2278,7 +2321,13 @@ function GenerateTab({ cycleId }: { cycleId: number }) {
   );
 }
 
-function ReviewTab({ cycleId }: { cycleId: number }) {
+function ReviewTab({
+  cycleId,
+  refreshKey = 0,
+}: {
+  cycleId: number;
+  refreshKey?: number;
+}) {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [onlyAnomaly, setOnlyAnomaly] = useState(false);
@@ -2294,7 +2343,7 @@ function ReviewTab({ cycleId }: { cycleId: number }) {
   }
   useEffect(() => {
     load();
-  }, [cycleId]);
+  }, [cycleId, refreshKey]);
 
   const rows = useMemo(() => {
     const all = data?.rows || [];
@@ -2411,7 +2460,15 @@ function ReviewTab({ cycleId }: { cycleId: number }) {
   );
 }
 
-function RelationsTab({ cycleId }: { cycleId: Cycle }) {
+function RelationsTab({
+  cycleId,
+  refreshKey = 0,
+  onRelationsChanged,
+}: {
+  cycleId: Cycle;
+  refreshKey?: number;
+  onRelationsChanged?: () => void;
+}) {
   const cid = cycleId.id;
   const { message } = AntApp.useApp();
   const surveys = useSurveys();
@@ -2422,19 +2479,34 @@ function RelationsTab({ cycleId }: { cycleId: Cycle }) {
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
   const relType = Form.useWatch("relationType", form);
+  const relationRequestId = useRef(0);
 
-  async function load() {
+  async function load(signal?: AbortSignal) {
+    const requestId = relationRequestId.current + 1;
+    relationRequestId.current = requestId;
     setLoading(true);
     try {
-      const { data } = await http.get(`/admin/eval/cycles/${cid}/relations`);
-      setRows(data || []);
+      const { data } = await http.get(`/admin/eval/cycles/${cid}/relations`, {
+        signal,
+        timeout: 10000,
+      });
+      if (requestId === relationRequestId.current) setRows(data || []);
+    } catch {
+      if (!signal?.aborted && requestId === relationRequestId.current) {
+        message.error("关系明细加载失败，请重试");
+      }
     } finally {
-      setLoading(false);
+      if (requestId === relationRequestId.current) setLoading(false);
     }
   }
   useEffect(() => {
-    load();
-  }, [cid]);
+    const controller = new AbortController();
+    load(controller.signal);
+    return () => {
+      relationRequestId.current += 1;
+      controller.abort();
+    };
+  }, [cid, refreshKey]);
   useEffect(() => {
     const request =
       cycleId.version && cycleId.version >= 2
@@ -2460,7 +2532,8 @@ function RelationsTab({ cycleId }: { cycleId: Cycle }) {
       message.success("已添加");
       setModalOpen(false);
       form.resetFields();
-      load();
+      if (onRelationsChanged) onRelationsChanged();
+      else load();
     } catch (e: any) {
       message.error(e.response?.data?.message || "添加失败");
     } finally {
@@ -2472,7 +2545,8 @@ function RelationsTab({ cycleId }: { cycleId: Cycle }) {
     try {
       await http.delete(`/admin/eval/relations/${rid}`);
       message.success("已删除");
-      load();
+      if (onRelationsChanged) onRelationsChanged();
+      else load();
     } catch (e: any) {
       message.error(e.response?.data?.message || "删除失败");
     }
@@ -2486,19 +2560,37 @@ function RelationsTab({ cycleId }: { cycleId: Cycle }) {
 
   return (
     <div>
-      <Button
-        type="primary"
-        style={{ marginBottom: 16 }}
-        onClick={() => setModalOpen(true)}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          marginBottom: 16,
+        }}
       >
-        人工添加关系（领导/异常补配）
-      </Button>
+        <Space wrap>
+          <Button type="primary" onClick={() => setModalOpen(true)}>
+            人工添加关系（领导/异常补配）
+          </Button>
+          <Typography.Text type="secondary">
+            共 {rows.length} 条关系
+          </Typography.Text>
+        </Space>
+        <Button loading={loading} onClick={() => load()}>
+          刷新明细
+        </Button>
+      </div>
       <Table
         rowKey="id"
         loading={loading}
         dataSource={rows}
         size="small"
-        pagination={{ pageSize: 20 }}
+        locale={{ emptyText: "暂无评价关系，请先生成或人工添加" }}
+        pagination={{
+          pageSize: 20,
+          showTotal: (total) => `共 ${total} 条`,
+        }}
         columns={[
           { title: "评价人", dataIndex: "raterName" },
           { title: "被评人", dataIndex: "rateeName" },
@@ -2506,20 +2598,33 @@ function RelationsTab({ cycleId }: { cycleId: Cycle }) {
             title: "类型",
             dataIndex: "relationType",
             width: 100,
-            render: (v: string) => TYPE_LABEL[v] || v,
+            render: (v: string) => (
+              <Tag
+                color={
+                  v === "self" ? "blue" : v === "peer" ? "cyan" : "gold"
+                }
+              >
+                {TYPE_LABEL[v] || v}
+              </Tag>
+            ),
           },
           {
             title: "来源",
             dataIndex: "source",
             width: 90,
             render: (v: string) =>
-              v === "manual" ? <Tag color="blue">人工</Tag> : "自动",
+              v === "manual" ? (
+                <Tag color="purple">人工</Tag>
+              ) : (
+                <Tag>自动</Tag>
+              ),
           },
           {
             title: "已填",
             dataIndex: "done",
             width: 80,
-            render: (v: boolean) => (v ? <Tag color="green">是</Tag> : "否"),
+            render: (v: boolean) =>
+              v ? <Tag color="green">已填</Tag> : <Tag>待填</Tag>,
           },
           {
             title: "操作",
