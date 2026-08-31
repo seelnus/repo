@@ -2470,6 +2470,7 @@ function RelationsTab({
   onRelationsChanged?: () => void;
 }) {
   const cid = cycleId.id;
+  const isV2 = (cycleId.version || 1) >= 2;
   const { message } = AntApp.useApp();
   const surveys = useSurveys();
   const [rows, setRows] = useState<any[]>([]);
@@ -2569,7 +2570,9 @@ function RelationsTab({
       >
         <Space wrap>
           <Button type="primary" onClick={() => setModalOpen(true)}>
-            人工添加关系（领导/异常补配）
+            {isV2
+              ? "人工添加关系（异常补配）"
+              : "人工添加关系（领导/异常补配）"}
           </Button>
           <Typography.Text type="secondary">
             共 {rows.length} 条关系
@@ -2650,7 +2653,7 @@ function RelationsTab({
           form={form}
           layout="vertical"
           preserve={false}
-          initialValues={{ relationType: "leader" }}
+          initialValues={{ relationType: isV2 ? "peer" : "leader" }}
         >
           <Form.Item
             name="relationType"
@@ -2661,7 +2664,9 @@ function RelationsTab({
               options={[
                 { label: "自评", value: "self" },
                 { label: "他评", value: "peer" },
-                { label: "领导评价", value: "leader" },
+                ...(!isV2
+                  ? [{ label: "领导评价", value: "leader" }]
+                  : []),
               ]}
             />
           </Form.Item>
