@@ -1,0 +1,8 @@
+{
+  "name": "prisma",
+  "version": "1.0.0",
+  "private": true,
+  "bin": {
+    "prisma": "cli.js"
+  }
+}

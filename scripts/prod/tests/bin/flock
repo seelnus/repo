@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+
+# The isolated drill is single-process. Production always uses util-linux flock.
+exit 0

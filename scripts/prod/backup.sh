@@ -8,6 +8,8 @@ source "$SCRIPT_DIR/lib.sh"
 
 TARGET_REF="HEAD"
 HOLD_MAINTENANCE=0
+SKIP_LOCK=0
+RESULT_FILE=""
 backend_was_stopped=0
 minio_was_stopped=0
 backup_dir=""
@@ -24,7 +26,9 @@ usage() {
   --backup-root PATH      备份根目录
   --target-ref REF        待发布 Git ref（写入清单）
   --hold-maintenance      验证成功后仍保持后端和 MinIO 停止
+  --result-file PATH      将成功生成的备份 ID 写入指定文件
   --dry-run               输出并执行只读预检，不生成恢复点或停止服务
+  --no-lock               仅供同一套发布/回滚脚本内部调用
   -h, --help              显示帮助
 EOF
 }
@@ -35,11 +39,19 @@ while (($#)); do
     --backup-root) BACKUP_ROOT="$2"; shift 2 ;;
     --target-ref) TARGET_REF="$2"; shift 2 ;;
     --hold-maintenance) HOLD_MAINTENANCE=1; shift ;;
+    --result-file) RESULT_FILE="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --no-lock) SKIP_LOCK=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "未知参数: $1" ;;
   esac
 done
+
+if [[ -n "$RESULT_FILE" ]]; then
+  [[ "$RESULT_FILE" = /* ]] || die "--result-file 必须是绝对路径"
+  [[ -f "$RESULT_FILE" && ! -L "$RESULT_FILE" ]] \
+    || die "--result-file 必须是调用方预先创建的普通文件"
+fi
 
 cleanup() {
   exit_code=$?
@@ -72,7 +84,7 @@ trap 'exit 130' HUP INT TERM
 
 require_cmd flock
 [[ "$BACKUP_ROOT" = /* ]] || die "备份根目录必须是绝对路径"
-if ((DRY_RUN == 0)); then
+if ((DRY_RUN == 0 && SKIP_LOCK == 0)); then
   acquire_lock
 fi
 
@@ -241,4 +253,8 @@ bash "$SCRIPT_DIR/verify-backup.sh" \
   --no-lock
 
 log INFO backup_verified "backup_id=$backup_id status=VERIFIED path=$backup_dir"
+if [[ -n "$RESULT_FILE" ]]; then
+  printf '%s\n' "$backup_id" > "$RESULT_FILE"
+  chmod 600 "$RESULT_FILE"
+fi
 printf '%s\n' "$backup_id"

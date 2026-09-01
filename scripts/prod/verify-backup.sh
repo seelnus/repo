@@ -132,6 +132,8 @@ tar -tzf "$backup_dir/backend-uploads.tar.gz" >/dev/null
 tar -tzf "$backup_dir/minio-data.tar.gz" >/dev/null
 
 set +e
+# The single-quoted payload is Python source and must not be expanded by Bash.
+# shellcheck disable=SC2016
 gzip -dc "$backup_dir/database.sql.gz" | "$PYTHON_BIN" -c '
 import re, sys
 database = re.escape(sys.argv[1])

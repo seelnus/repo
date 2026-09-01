@@ -6,16 +6,17 @@
 set -Eeuo pipefail
 umask 077
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_DIR="${PROJECT_DIR:-/www/wwwroot/survey-app}"
 BACKUP_ROOT="${BACKUP_ROOT:-/www/backup/survey-app}"
 DB_SERVICE="${DB_SERVICE:-mysql}"
 BACKEND_SERVICE="${BACKEND_SERVICE:-app-backend}"
 MINIO_SERVICE="${MINIO_SERVICE:-minio}"
+FRONTEND_SERVICE="${FRONTEND_SERVICE:-app-frontend}"
 DB_NAME="${DB_NAME:-survey_app}"
 HELPER_IMAGE="${HELPER_IMAGE:-node:20-alpine}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 DRY_RUN="${DRY_RUN:-0}"
+HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://127.0.0.1:3100/api/health}"
 
 timestamp() {
   date -u '+%Y-%m-%dT%H:%M:%SZ'
@@ -52,7 +53,7 @@ compose() {
 
 service_container_id() {
   local service="$1" cid
-  cid="$(compose ps -q "$service")"
+  cid="$(compose ps --all -q "$service")"
   [[ -n "$cid" ]] || die "Compose 服务没有容器: $service"
   printf '%s\n' "$cid"
 }
@@ -95,7 +96,7 @@ mysql_client() {
     escaped="$(printf "%s" "$password" | sed "s/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g")"
     umask 077
     printf "[client]\nuser=root\npassword=\"%s\"\n" "$escaped" > "$cfg"
-    mysql --defaults-extra-file="$cfg" "$@"
+    mysql --defaults-extra-file="$cfg" --host=127.0.0.1 "$@"
   ' sh "$@"
 }
 
@@ -115,7 +116,7 @@ mysql_import() {
     escaped="$(printf "%s" "$password" | sed "s/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g")"
     umask 077
     printf "[client]\nuser=root\npassword=\"%s\"\n" "$escaped" > "$cfg"
-    mysql --defaults-extra-file="$cfg" "$1"
+    mysql --defaults-extra-file="$cfg" --host=127.0.0.1 "$1"
   ' sh "$database"
 }
 
@@ -134,7 +135,7 @@ mysql_dump() {
     escaped="$(printf "%s" "$password" | sed "s/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g")"
     umask 077
     printf "[client]\nuser=root\npassword=\"%s\"\n" "$escaped" > "$cfg"
-    mysqldump --defaults-extra-file="$cfg" "$@"
+    mysqldump --defaults-extra-file="$cfg" --host=127.0.0.1 "$@"
   ' sh "$@"
 }
 
@@ -211,3 +212,69 @@ log_file_append() {
   shift
   printf 'time=%s %s\n' "$(timestamp)" "$*" >> "$file"
 }
+
+manifest_value() {
+  local manifest_path="$1" dotted_path="$2"
+  "$PYTHON_BIN" - "$manifest_path" "$dotted_path" <<'PY'
+import json
+import sys
+
+manifest_path, dotted_path = sys.argv[1:]
+with open(manifest_path, encoding="utf-8") as handle:
+    value = json.load(handle)
+for part in dotted_path.split("."):
+    if not isinstance(value, dict) or part not in value:
+        raise SystemExit(f"manifest 缺少字段: {dotted_path}")
+    value = value[part]
+if isinstance(value, (dict, list)):
+    raise SystemExit(f"manifest 字段不是标量: {dotted_path}")
+print(str(value))
+PY
+}
+
+wait_for_http_health() {
+  local attempts="${1:-60}" delay_seconds="${2:-2}" attempt
+  require_cmd curl
+  for ((attempt=1; attempt<=attempts; attempt++)); do
+    if curl --fail --silent --show-error --max-time 5 "$HEALTHCHECK_URL" >/dev/null 2>&1; then
+      log INFO healthcheck_ok "url=$HEALTHCHECK_URL attempt=$attempt"
+      return 0
+    fi
+    sleep "$delay_seconds"
+  done
+  die "健康检查失败: $HEALTHCHECK_URL"
+}
+
+assert_live_database_matches_backup() (
+  set -Eeuo pipefail
+  local backup_dir="$1" work_dir table_name table_identifier actual_count
+  work_dir="$(mktemp -d)"
+  cleanup_live_compare() {
+    rm -f -- \
+      "$work_dir/actual-row-counts.tsv" \
+      "$work_dir/actual-migrations.tsv" \
+      "$work_dir/actual-tables.txt"
+    rmdir -- "$work_dir" 2>/dev/null || true
+  }
+  trap cleanup_live_compare EXIT
+
+  printf 'table\trow_count\n' > "$work_dir/actual-row-counts.tsv"
+  mysql_query "$DB_NAME" \
+    "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME;" \
+    > "$work_dir/actual-tables.txt"
+  while IFS= read -r table_name; do
+    [[ -n "$table_name" ]] || continue
+    table_identifier="$(sql_identifier "$table_name")"
+    actual_count="$(mysql_query "$DB_NAME" "SELECT COUNT(*) FROM $table_identifier;")"
+    printf '%s\t%s\n' "$table_name" "$actual_count" >> "$work_dir/actual-row-counts.tsv"
+  done < "$work_dir/actual-tables.txt"
+  diff -u "$backup_dir/row-counts.tsv" "$work_dir/actual-row-counts.tsv" \
+    || die "生产库恢复后的表集合或行数与恢复点不一致"
+
+  printf 'migration_name\tfinished\trolled_back\tapplied_steps\n' > "$work_dir/actual-migrations.tsv"
+  mysql_query "$DB_NAME" \
+    "SELECT migration_name, IF(finished_at IS NULL,0,1), IF(rolled_back_at IS NULL,0,1), applied_steps_count FROM _prisma_migrations ORDER BY started_at, migration_name;" \
+    >> "$work_dir/actual-migrations.tsv"
+  diff -u "$backup_dir/migrations.tsv" "$work_dir/actual-migrations.tsv" \
+    || die "生产库恢复后的 Prisma 迁移记录与恢复点不一致"
+)

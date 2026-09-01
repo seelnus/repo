@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+
+printf '%s\n' \
+  'Filesystem 1024-blocks Used Available Capacity Mounted on' \
+  'fixture 100 99 1 99% /fixture'

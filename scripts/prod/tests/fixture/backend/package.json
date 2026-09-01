@@ -1,0 +1,13 @@
+{
+  "name": "prod-script-fixture-backend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "prisma:generate": "prisma generate",
+    "prisma:deploy": "prisma migrate deploy",
+    "seed": "prisma seed"
+  },
+  "devDependencies": {
+    "prisma": "file:./fake-prisma"
+  }
+}
