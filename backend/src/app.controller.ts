@@ -1,16 +1,22 @@
-import { Body, Controller, Delete, Get, Header, Param, ParseIntPipe, Post, Put, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Header, Param, ParseIntPipe, Post, Put, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { SurveyStatus, SurveyType } from '@prisma/client';
-import { diskStorage } from 'multer';
+import { diskStorage, memoryStorage } from 'multer';
 import { extname } from 'path';
 import type { Response } from 'express';
 import { AdminAuthGuard } from './admin-auth.guard';
 import { FillAuthGuard } from './fill-auth.guard';
 import { AppService } from './app.service';
+import { OrganizationService } from './organization.service';
+import { OrganizationWorkbookService } from './organization-workbook.service';
 
 @Controller('api')
 export class AppController {
-  constructor(private readonly app: AppService) {}
+  constructor(
+    private readonly app: AppService,
+    private readonly organization: OrganizationService,
+    private readonly organizationWorkbook: OrganizationWorkbookService,
+  ) {}
 
   @Get('health')
   health() {
@@ -42,39 +48,169 @@ export class AppController {
 
   @UseGuards(AdminAuthGuard)
   @Get('admin/contacts')
-  listContacts(@Query('q') q?: string) {
-    return this.app.listContacts(q);
+  listContacts(
+    @Query('q') q?: string,
+    @Query('departmentId') departmentId?: string,
+    @Query('membershipType') membershipType?: 'primary' | 'secondary' | 'all',
+    @Query('status') status?: 'active' | 'inactive' | 'all',
+  ) {
+    return this.organization.listContacts({
+      q,
+      departmentId: departmentId ? Number(departmentId) : undefined,
+      membershipType,
+      status,
+    });
   }
 
   @UseGuards(AdminAuthGuard)
   @Post('admin/contacts')
   createContact(@Body() body: any) {
-    return this.app.createContact(body);
+    return this.organization.createContact(body);
   }
 
   @UseGuards(AdminAuthGuard)
   @Put('admin/contacts/:id')
   updateContact(@Param('id', ParseIntPipe) id: number, @Body() body: any) {
-    return this.app.updateContact(id, body);
+    return this.organization.updateContact(id, body);
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @Put('admin/contacts/:id/status')
+  setContactStatus(
+    @Param('id', ParseIntPipe) id: number,
+    @Body('isActive') isActive: boolean,
+  ) {
+    return this.organization.setContactStatus(id, Boolean(isActive));
   }
 
   @UseGuards(AdminAuthGuard)
   @Delete('admin/contacts/:id')
   deleteContact(@Param('id', ParseIntPipe) id: number) {
-    return this.app.deleteContact(id);
+    return this.organization.deleteContact(id);
   }
 
   @UseGuards(AdminAuthGuard)
   @Post('admin/contacts/import')
-  importContacts(@Body() body: any) {
-    return this.app.importContacts(body.rows || []);
+  importContacts(@Body() body: any, @Query('dryRun') dryRun?: string) {
+    return this.organization.importContacts(
+      body.rows || [],
+      dryRun === 'true',
+    );
   }
 
   @UseGuards(AdminAuthGuard)
   @Get('admin/contacts/export')
   @Header('Content-Type', 'text/csv; charset=utf-8')
   async exportContacts(@Res() res: Response) {
-    res.attachment('contacts.csv').send(await this.app.exportContacts());
+    res
+      .attachment('contacts.csv')
+      .send(await this.organization.exportContactsCsv());
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @Get('admin/org/departments/tree')
+  listDepartmentTree() {
+    return this.organization.listDepartmentTree();
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @Post('admin/org/departments')
+  createDepartment(@Body() body: any) {
+    return this.organization.createDepartment(body);
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @Put('admin/org/departments/:id')
+  updateDepartment(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: any,
+  ) {
+    return this.organization.updateDepartment(id, body);
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @Post('admin/org/departments/:id/move')
+  moveDepartment(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: any,
+  ) {
+    return this.organization.moveDepartment(id, body);
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @Put('admin/org/departments/:id/status')
+  setDepartmentStatus(
+    @Param('id', ParseIntPipe) id: number,
+    @Body('isActive') isActive: boolean,
+  ) {
+    return this.organization.setDepartmentStatus(id, Boolean(isActive));
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @Delete('admin/org/departments/:id')
+  deleteDepartment(@Param('id', ParseIntPipe) id: number) {
+    return this.organization.deleteDepartment(id);
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @Post('admin/org/import/preview')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 10 * 1024 * 1024 },
+    }),
+  )
+  previewOrganizationWorkbook(@UploadedFile() file: Express.Multer.File) {
+    return this.organizationWorkbook.previewWorkbook(file);
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @Post('admin/org/import/apply')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 10 * 1024 * 1024 },
+    }),
+  )
+  applyOrganizationWorkbook(
+    @UploadedFile() file: Express.Multer.File,
+    @Body() body: any,
+  ) {
+    let selectedIds: unknown = [];
+    try {
+      selectedIds = JSON.parse(String(body?.selectedIds || '[]'));
+    } catch {
+      throw new BadRequestException('确认项格式不正确');
+    }
+    return this.organizationWorkbook.applyWorkbookSelection(file, {
+      fileHash: body?.fileHash,
+      baselineHash: body?.baselineHash,
+      selectedIds,
+    });
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @Post('admin/org/import')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 10 * 1024 * 1024 },
+    }),
+  )
+  importOrganizationWorkbook(
+    @UploadedFile() file: Express.Multer.File,
+    @Query('dryRun') dryRun?: string,
+  ) {
+    return this.organizationWorkbook.importWorkbook(file, dryRun === 'true');
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @Get('admin/org/export')
+  async exportOrganizationWorkbook(@Res() res: Response) {
+    res
+      .attachment('organization-contacts.xlsx')
+      .type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+      .send(await this.organizationWorkbook.exportWorkbook());
   }
 
 

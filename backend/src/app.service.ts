@@ -122,11 +122,22 @@ export class AppService {
         skipped += 1;
         continue;
       }
-      await this.prisma.contact.upsert({
-        where: { name: data.name },
-        create: data,
-        update: data,
+      const matches = await this.prisma.contact.findMany({
+        where: { phone: data.phone },
+        select: { id: true },
       });
+      if (matches.length > 1) {
+        skipped += 1;
+        continue;
+      }
+      if (matches[0]) {
+        await this.prisma.contact.update({
+          where: { id: matches[0].id },
+          data,
+        });
+      } else {
+        await this.prisma.contact.create({ data });
+      }
       count += 1;
     }
     return { count, skipped };

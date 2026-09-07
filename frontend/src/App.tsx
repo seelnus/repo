@@ -73,6 +73,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, ClipboardEvent, ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 import { EvalCycleList, EvalCycleDetail, EvalFillPage } from './EvalPages';
+import { OrganizationContactsPage } from './OrganizationContactsPage';
 
 const API = '/api';
 const FILE_BASE = API.replace(/\/api$/, '');
@@ -347,7 +348,7 @@ function AdminShell() {
             <Route path="/whitelists" element={<WhitelistListPage />} />
             <Route path="/whitelists/new" element={<WhitelistEditorPage />} />
             <Route path="/whitelists/:surveyId/edit" element={<WhitelistEditorPage />} />
-            <Route path="/contacts" element={<ContactsPage />} />
+            <Route path="/contacts" element={<OrganizationContactsPage />} />
             <Route path="/members" element={<MembersPage />} />
           </Routes>
         </Layout.Content>
@@ -2408,7 +2409,7 @@ function WhitelistMemberPanel({ members, onClear, onRemove }: { members: Contact
   );
 }
 
-function ContactsPage() {
+export function LegacyContactsPage() {
   const { message } = AntApp.useApp();
   const [rows, setRows] = useState<any[]>([]);
   const [editing, setEditing] = useState<any>();

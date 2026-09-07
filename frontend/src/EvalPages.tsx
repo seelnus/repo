@@ -17,6 +17,7 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Progress,
   QRCode,
   Radio,
   Rate,
@@ -30,6 +31,7 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
 } from "antd";
 import { http, fillHttp, downloadFile } from "./App";
@@ -63,6 +65,84 @@ interface ContactLite {
   department?: string | null;
   position?: string | null;
   tags?: string | null;
+  memberships?: ContactMembershipLite[];
+}
+interface ContactMembershipLite {
+  departmentId: number;
+  departmentName: string;
+  departmentPath: string;
+  isPrimary: boolean;
+  defaultEvalEnabled: boolean;
+  roleName?: string | null;
+  isActive: boolean;
+}
+interface ParticipantGroupSnapshotLite {
+  id: number;
+  departmentId: number;
+  departmentNameSnapshot: string;
+  departmentPathSnapshot: string;
+  isPrimarySnapshot: boolean;
+  evalEnabled: boolean;
+  roleNameSnapshot?: string | null;
+}
+interface EvalParticipantLite {
+  id: number;
+  contactId: number;
+  nameSnapshot: string;
+  departmentSnapshot?: string | null;
+  positionSnapshot?: string | null;
+  groupName: string;
+  mode: string;
+  peerExempt: boolean;
+  groups: ParticipantGroupSnapshotLite[];
+  relationsNeedRegeneration?: boolean;
+}
+
+interface EvalProgressPerson {
+  relationId: number;
+  contactId: number;
+  name: string;
+  source: string;
+  sharedGroups: Array<{
+    departmentId: number | null;
+    name: string;
+    path: string;
+  }>;
+}
+
+interface EvalProgressGroup {
+  type: "self" | "peer" | "leader";
+  label: string;
+  total: number;
+  completedCount: number;
+  pendingCount: number;
+  completionRate: number | null;
+  completed: EvalProgressPerson[];
+  pending: EvalProgressPerson[];
+}
+
+interface EvalRaterProgress {
+  participant: { contactId: number; name: string };
+  summary: {
+    total: number;
+    completed: number;
+    pending: number;
+    completionRate: number | null;
+  };
+  groups: EvalProgressGroup[];
+}
+interface ParticipantPreview {
+  participantCount: number;
+  enabledGroupCount: number;
+  multiGroupParticipantCount: number;
+  singlePersonGroupCount: number;
+  singlePersonGroups: Array<{
+    departmentId: number;
+    name: string;
+    path: string;
+    contactId: number;
+  }>;
+  warnings: string[];
 }
 interface EvalQuestionBase {
   id: string;
@@ -1171,9 +1251,7 @@ function EvalScoreQuestionEditor({
               value={question.casePrompt}
               disabled={readonly}
               placeholder="请填写具体案例"
-              onChange={(event) =>
-                onChange({ casePrompt: event.target.value })
-              }
+              onChange={(event) => onChange({ casePrompt: event.target.value })}
             />
           </div>
           <Alert
@@ -1191,6 +1269,45 @@ function EvalScoreQuestionEditor({
   );
 }
 
+function CompactGroupTags({
+  groups,
+  fallback,
+}: {
+  groups: Array<{
+    id: number;
+    path: string;
+    primary: boolean;
+    enabled: boolean;
+  }>;
+  fallback?: string | null;
+}) {
+  const visibleGroups = groups.filter((group) => group.enabled);
+  if (!visibleGroups.length) {
+    return (
+      <Typography.Text type="secondary">{fallback || "未归组"}</Typography.Text>
+    );
+  }
+  const shown = visibleGroups.slice(0, 3);
+  const hidden = visibleGroups.slice(3);
+  return (
+    <Space size={[4, 4]} wrap>
+      {shown.map((group) => (
+        <Tooltip title={group.path} key={group.id}>
+          <Tag color={group.primary ? "green" : "blue"}>
+            {group.primary ? "主" : "兼"}·
+            {group.path.split("/")[group.path.split("/").length - 1]}
+          </Tag>
+        </Tooltip>
+      ))}
+      {hidden.length > 0 && (
+        <Tooltip title={hidden.map((group) => group.path).join("、")}>
+          <Tag>+{hidden.length}</Tag>
+        </Tooltip>
+      )}
+    </Space>
+  );
+}
+
 function EvalPeopleTab({ cycle }: { cycle: Cycle }) {
   const [relationRevision, setRelationRevision] = useState(0);
   const notifyRelationsChanged = () => {
@@ -1203,7 +1320,9 @@ function EvalPeopleTab({ cycle }: { cycle: Cycle }) {
         {
           key: "participants",
           label: "参评人员",
-          children: <EvalParticipantsTab cycle={cycle} />,
+          children: (
+            <EvalParticipantsTab cycle={cycle} refreshKey={relationRevision} />
+          ),
         },
         {
           key: "special",
@@ -1220,10 +1339,7 @@ function EvalPeopleTab({ cycle }: { cycle: Cycle }) {
                 onRelationsChanged={notifyRelationsChanged}
               />
               <Divider />
-              <ReviewTab
-                cycleId={cycle.id}
-                refreshKey={relationRevision}
-              />
+              <ReviewTab cycleId={cycle.id} refreshKey={relationRevision} />
               <Divider />
               <RelationsTab
                 cycleId={cycle}
@@ -1238,19 +1354,30 @@ function EvalPeopleTab({ cycle }: { cycle: Cycle }) {
   );
 }
 
-function EvalParticipantsTab({ cycle }: { cycle: Cycle }) {
+function EvalParticipantsTab({
+  cycle,
+  refreshKey = 0,
+}: {
+  cycle: Cycle;
+  refreshKey?: number;
+}) {
   const { message } = AntApp.useApp();
   const [contacts, setContacts] = useState<ContactLite[]>([]);
   const [departments, setDepartments] = useState<
-    Array<{ name: string; count: number }>
+    Array<{ id: number; name: string; path: string; count: number }>
   >([]);
-  const [participants, setParticipants] = useState<any[]>([]);
+  const [participants, setParticipants] = useState<EvalParticipantLite[]>([]);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
-  const [selectedDepartments, setSelectedDepartments] = useState<string[]>([]);
+  const [selectedDepartments, setSelectedDepartments] = useState<number[]>([]);
   const [saving, setSaving] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [preview, setPreview] = useState<ParticipantPreview | null>(null);
   const [copyOpen, setCopyOpen] = useState(false);
   const [sourceCycleId, setSourceCycleId] = useState<number>();
   const [cycles, setCycles] = useState<Cycle[]>([]);
+  const [adjusting, setAdjusting] = useState<EvalParticipantLite | null>(null);
+  const [groupDraft, setGroupDraft] = useState<Record<number, boolean>>({});
+  const [groupSaving, setGroupSaving] = useState(false);
   const readonly = cycle.status !== "draft";
 
   async function load() {
@@ -1260,10 +1387,10 @@ function EvalParticipantsTab({ cycle }: { cycle: Cycle }) {
     ]);
     setContacts(candidateResponse.data.contacts || []);
     setDepartments(candidateResponse.data.departments || []);
-    setParticipants(participantResponse.data || []);
+    setParticipants((participantResponse.data || []) as EvalParticipantLite[]);
     setSelectedIds(
       (participantResponse.data || []).map(
-        (participant: any) => participant.contactId,
+        (participant: EvalParticipantLite) => participant.contactId,
       ),
     );
   }
@@ -1276,17 +1403,49 @@ function EvalParticipantsTab({ cycle }: { cycle: Cycle }) {
           (response.data || []).filter((item: Cycle) => item.id !== cycle.id),
         ),
       );
-  }, [cycle.id]);
+  }, [cycle.id, refreshKey]);
 
-  function selectDepartments(values: string[]) {
+  const participantByContactId = useMemo(
+    () =>
+      new Map(
+        participants.map((participant) => [participant.contactId, participant]),
+      ),
+    [participants],
+  );
+  const relationsNeedRegeneration = participants.some(
+    (participant) => participant.relationsNeedRegeneration,
+  );
+
+  function selectDepartments(values: number[]) {
     setSelectedDepartments(values);
     setSelectedIds(
       contacts
         .filter((contact) =>
-          values.includes(contact.department?.trim() || "未分组"),
+          (contact.memberships || []).some((membership) =>
+            values.includes(membership.departmentId),
+          ),
         )
         .map((contact) => contact.id),
     );
+  }
+
+  async function previewSelection() {
+    if (!selectedIds.length) return message.warning("请至少选择一名参评人员");
+    setPreviewLoading(true);
+    try {
+      const { data } = await http.post(
+        `/admin/eval/cycles/${cycle.id}/participants/preview`,
+        { contactIds: selectedIds },
+      );
+      setPreview(data);
+    } catch (error: any) {
+      const detail = error.response?.data?.message;
+      message.error(
+        Array.isArray(detail) ? detail.join("；") : detail || "预览失败",
+      );
+    } finally {
+      setPreviewLoading(false);
+    }
   }
 
   async function save() {
@@ -1296,9 +1455,13 @@ function EvalParticipantsTab({ cycle }: { cycle: Cycle }) {
         contactIds: selectedIds,
       });
       message.success(`已生成 ${selectedIds.length} 人的批次快照`);
-      load();
+      setPreview(null);
+      await load();
     } catch (error: any) {
-      message.error(error.response?.data?.message || "保存失败");
+      const detail = error.response?.data?.message;
+      message.error(
+        Array.isArray(detail) ? detail.join("；") : detail || "保存失败",
+      );
     } finally {
       setSaving(false);
     }
@@ -1312,10 +1475,65 @@ function EvalParticipantsTab({ cycle }: { cycle: Cycle }) {
       });
       message.success("已复制上一批次人员范围");
       setCopyOpen(false);
-      load();
+      await load();
     } catch (error: any) {
       message.error(error.response?.data?.message || "复制失败");
     }
+  }
+
+  function openGroupDrawer(participant: EvalParticipantLite) {
+    setAdjusting(participant);
+    setGroupDraft(
+      Object.fromEntries(
+        (participant.groups || []).map((group) => [
+          group.departmentId,
+          group.evalEnabled,
+        ]),
+      ),
+    );
+  }
+
+  async function saveGroupChanges() {
+    if (!adjusting) return;
+    setGroupSaving(true);
+    try {
+      await http.put(
+        `/admin/eval/cycles/${cycle.id}/participants/${adjusting.id}/groups`,
+        {
+          groups: adjusting.groups.map((group) => ({
+            departmentId: group.departmentId,
+            evalEnabled: group.isPrimarySnapshot
+              ? true
+              : Boolean(groupDraft[group.departmentId]),
+          })),
+        },
+      );
+      message.success("当期互评小组已更新，请重新生成评价关系");
+      setAdjusting(null);
+      await load();
+    } catch (error: any) {
+      message.error(error.response?.data?.message || "小组调整失败");
+    } finally {
+      setGroupSaving(false);
+    }
+  }
+
+  function candidateGroups(contact: ContactLite) {
+    return (contact.memberships || []).map((membership) => ({
+      id: membership.departmentId,
+      path: membership.departmentPath,
+      primary: membership.isPrimary,
+      enabled: true,
+    }));
+  }
+
+  function participantGroups(participant: EvalParticipantLite) {
+    return (participant.groups || []).map((group) => ({
+      id: group.departmentId,
+      path: group.departmentPathSnapshot,
+      primary: group.isPrimarySnapshot,
+      enabled: group.evalEnabled,
+    }));
   }
 
   return (
@@ -1326,6 +1544,14 @@ function EvalParticipantsTab({ cycle }: { cycle: Cycle }) {
         style={{ marginBottom: 16 }}
         message="候选人直接来自联系人模块。保存后形成当前批次快照，联系人后续变更不会静默改写本批次。"
       />
+      {relationsNeedRegeneration && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="人员范围或当期小组已变化，需要到“关系复核”重新生成评价关系"
+        />
+      )}
       {!readonly && (
         <Card className="eval-toolbar-card">
           <Space wrap>
@@ -1335,13 +1561,17 @@ function EvalParticipantsTab({ cycle }: { cycle: Cycle }) {
               placeholder="按部门/组选择"
               value={selectedDepartments}
               options={departments.map((department) => ({
-                label: `${department.name}（${department.count} 人）`,
-                value: department.name,
+                label: `${department.path}（${department.count} 人）`,
+                value: department.id,
               }))}
               onChange={selectDepartments}
             />
             <Button onClick={() => setCopyOpen(true)}>复制上一批次</Button>
-            <Button type="primary" loading={saving} onClick={save}>
+            <Button
+              type="primary"
+              loading={previewLoading}
+              onClick={previewSelection}
+            >
               确认人员范围（{selectedIds.length} 人）
             </Button>
           </Space>
@@ -1358,13 +1588,28 @@ function EvalParticipantsTab({ cycle }: { cycle: Cycle }) {
                 onChange: (keys) => setSelectedIds(keys as number[]),
               }
         }
-        pagination={{ pageSize: 15 }}
+        pagination={{
+          defaultPageSize: 15,
+          showSizeChanger: true,
+          pageSizeOptions: [10, 15, 20, 50, 100],
+        }}
         columns={[
           { title: "姓名", dataIndex: "name" },
           {
-            title: "部门/组",
-            dataIndex: "department",
-            render: (value) => value || "未分组",
+            title: "部门归属 / 当期互评小组",
+            render: (_value, row) => {
+              const participant = participantByContactId.get(row.id);
+              return (
+                <CompactGroupTags
+                  groups={
+                    participant
+                      ? participantGroups(participant)
+                      : candidateGroups(row)
+                  }
+                  fallback={row.department}
+                />
+              );
+            },
           },
           {
             title: "职位",
@@ -1382,8 +1627,105 @@ function EvalParticipantsTab({ cycle }: { cycle: Cycle }) {
                 <Tag>未加入</Tag>
               ),
           },
+          {
+            title: "操作",
+            width: 120,
+            render: (_value, row) => {
+              const participant = participantByContactId.get(row.id);
+              return participant ? (
+                <Button
+                  type="link"
+                  disabled={readonly || !participant.groups?.length}
+                  onClick={() => openGroupDrawer(participant)}
+                >
+                  调整小组
+                </Button>
+              ) : (
+                <Typography.Text type="secondary">—</Typography.Text>
+              );
+            },
+          },
         ]}
       />
+      <Modal
+        title="确认本批次人员与互评小组"
+        open={!!preview}
+        width={720}
+        okText="确认并生成快照"
+        cancelText="返回调整"
+        confirmLoading={saving}
+        onCancel={() => setPreview(null)}
+        onOk={save}
+      >
+        {preview && (
+          <div className="eval-participant-preview">
+            <Alert
+              type="warning"
+              showIcon
+              message="确认后将替换本批次人员快照，原自动关系需要重新生成；有效人工关系会保留。"
+            />
+            <Row gutter={[12, 12]} style={{ marginTop: 16 }}>
+              <Col span={6}>
+                <Statistic
+                  title="参评人员"
+                  value={preview.participantCount}
+                  suffix="人"
+                />
+              </Col>
+              <Col span={6}>
+                <Statistic
+                  title="开启小组"
+                  value={preview.enabledGroupCount}
+                  suffix="个"
+                />
+              </Col>
+              <Col span={6}>
+                <Statistic
+                  title="多小组人员"
+                  value={preview.multiGroupParticipantCount}
+                  suffix="人"
+                />
+              </Col>
+              <Col span={6}>
+                <Statistic
+                  title="单人小组"
+                  value={preview.singlePersonGroupCount}
+                  suffix="个"
+                />
+              </Col>
+            </Row>
+            {preview.singlePersonGroups.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <Typography.Text strong>需要关注的单人小组</Typography.Text>
+                <div style={{ marginTop: 8 }}>
+                  <Space size={[4, 6]} wrap>
+                    {preview.singlePersonGroups.map((group) => (
+                      <Tag color="orange" key={group.departmentId}>
+                        {group.path}
+                      </Tag>
+                    ))}
+                  </Space>
+                </div>
+              </div>
+            )}
+            {preview.warnings.length > 0 && (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginTop: 12 }}
+                message={`${preview.warnings.length} 条组织归属提示`}
+                description={
+                  <div className="eval-preview-warning-list">
+                    {preview.warnings.map((warning) => (
+                      <div key={warning}>{warning}</div>
+                    ))}
+                  </div>
+                }
+              />
+            )}
+          </div>
+        )}
+      </Modal>
       <Modal
         title="复制上一批次人员范围"
         open={copyOpen}
@@ -1401,6 +1743,81 @@ function EvalParticipantsTab({ cycle }: { cycle: Cycle }) {
           }))}
         />
       </Modal>
+      <Drawer
+        width={520}
+        title={
+          adjusting ? `${adjusting.nameSnapshot} · 当期互评小组` : "调整小组"
+        }
+        open={!!adjusting}
+        onClose={() => setAdjusting(null)}
+        extra={
+          <Space>
+            <Button onClick={() => setAdjusting(null)}>取消</Button>
+            <Button
+              type="primary"
+              loading={groupSaving}
+              disabled={readonly}
+              onClick={saveGroupChanges}
+            >
+              保存当期设置
+            </Button>
+          </Space>
+        }
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="这里只调整当前环评批次，不会修改通讯录中的部门归属和默认开关。"
+        />
+        <div className="eval-membership-rail">
+          {(adjusting?.groups || []).map((group) => (
+            <div
+              className={`eval-membership-rail-item${
+                group.isPrimarySnapshot ? " is-primary" : ""
+              }`}
+              key={group.departmentId}
+            >
+              <div className="eval-membership-rail-marker" />
+              <div className="eval-membership-rail-content">
+                <Space size={6} wrap>
+                  <Tag color={group.isPrimarySnapshot ? "green" : "blue"}>
+                    {group.isPrimarySnapshot ? "主部门" : "兼任部门"}
+                  </Tag>
+                  {group.roleNameSnapshot && (
+                    <Tag>{group.roleNameSnapshot}</Tag>
+                  )}
+                </Space>
+                <Typography.Text
+                  strong
+                  style={{ display: "block", marginTop: 8 }}
+                >
+                  {group.departmentPathSnapshot}
+                </Typography.Text>
+                <Typography.Text type="secondary">
+                  {group.isPrimarySnapshot
+                    ? "主部门固定参加本批次互评"
+                    : groupDraft[group.departmentId]
+                      ? "参加本批次互评"
+                      : "仅保留部门归属，不参加本批次互评"}
+                </Typography.Text>
+              </div>
+              <Switch
+                checked={
+                  group.isPrimarySnapshot ||
+                  Boolean(groupDraft[group.departmentId])
+                }
+                disabled={readonly || group.isPrimarySnapshot}
+                onChange={(checked) =>
+                  setGroupDraft((current) => ({
+                    ...current,
+                    [group.departmentId]: checked,
+                  }))
+                }
+              />
+            </div>
+          ))}
+        </div>
+      </Drawer>
     </div>
   );
 }
@@ -1448,7 +1865,22 @@ function EvalSpecialParticipantsTab({ cycle }: { cycle: Cycle }) {
       pagination={false}
       columns={[
         { title: "姓名", dataIndex: "nameSnapshot" },
-        { title: "评价小组", dataIndex: "groupName" },
+        {
+          title: "当期互评小组",
+          render: (_value, row) => (
+            <CompactGroupTags
+              groups={(row.groups || []).map(
+                (group: ParticipantGroupSnapshotLite) => ({
+                  id: group.departmentId,
+                  path: group.departmentPathSnapshot,
+                  primary: group.isPrimarySnapshot,
+                  enabled: group.evalEnabled,
+                }),
+              )}
+              fallback={row.groupName}
+            />
+          ),
+        },
         {
           title: "类型",
           dataIndex: "mode",
@@ -1670,6 +2102,10 @@ function EvalResultsPanel({ cycle }: { cycle: Cycle }) {
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<any>(null);
+  const [progress, setProgress] = useState<EvalRaterProgress | null>(null);
+  const [progressLoadingContactId, setProgressLoadingContactId] = useState<
+    number | null
+  >(null);
   const load = async () => {
     setLoading(true);
     try {
@@ -1691,6 +2127,22 @@ function EvalResultsPanel({ cycle }: { cycle: Cycle }) {
       );
     } catch (error: any) {
       message.error(error.response?.data?.message || "报告加载失败");
+    }
+  }
+  async function openProgress(contactId: number) {
+    setProgressLoadingContactId(contactId);
+    try {
+      setProgress(
+        (
+          await http.get(
+            `/admin/eval/cycles/${cycle.id}/progress/${contactId}`,
+          )
+        ).data,
+      );
+    } catch (error: any) {
+      message.error(error.response?.data?.message || "评价进度加载失败");
+    } finally {
+      setProgressLoadingContactId(null);
     }
   }
   const dimensions = useMemo(() => {
@@ -1765,12 +2217,25 @@ function EvalResultsPanel({ cycle }: { cycle: Cycle }) {
             title: "操作",
             fixed: "right",
             render: (_value, row) => (
-              <Button type="link" onClick={() => openReport(row.contactId)}>
-                查看报告
-              </Button>
+              <Space size={0}>
+                <Button
+                  type="link"
+                  loading={progressLoadingContactId === row.contactId}
+                  onClick={() => openProgress(row.contactId)}
+                >
+                  进度查看
+                </Button>
+                <Button type="link" onClick={() => openReport(row.contactId)}>
+                  查看报告
+                </Button>
+              </Space>
             ),
           },
         ]}
+      />
+      <EvalRaterProgressModal
+        progress={progress}
+        onClose={() => setProgress(null)}
       />
       <Drawer
         width={720}
@@ -1783,6 +2248,144 @@ function EvalResultsPanel({ cycle }: { cycle: Cycle }) {
         {report && <EvalReportContent report={report} />}
       </Drawer>
     </div>
+  );
+}
+
+function EvalRaterProgressModal({
+  progress,
+  onClose,
+}: {
+  progress: EvalRaterProgress | null;
+  onClose: () => void;
+}) {
+  const percentOf = (value: number | null) =>
+    value === null ? null : Math.round(value * 10000) / 100;
+  const renderPeople = (
+    people: EvalProgressPerson[],
+    state: "completed" | "pending",
+  ) => {
+    if (!people.length)
+      return <Typography.Text type="secondary">—</Typography.Text>;
+    return (
+      <div className="eval-progress-person-list">
+        {people.map((person) => {
+          const sourceText = person.sharedGroups.length
+            ? `互评小组：${person.sharedGroups.map((group) => group.path).join("；")}`
+            : person.source === "manual"
+              ? "来源：人工配置"
+              : person.source === "auto"
+                ? "来源：自动生成"
+                : "";
+          return (
+            <Tooltip key={person.relationId} title={sourceText || undefined}>
+              <Tag
+                className={`eval-progress-person-tag is-${state}`}
+                color={state === "completed" ? "cyan" : "orange"}
+              >
+                {person.name}
+              </Tag>
+            </Tooltip>
+          );
+        })}
+      </div>
+    );
+  };
+
+  return (
+    <Modal
+      width={920}
+      title={progress ? `${progress.participant.name} · 评价进度` : "评价进度"}
+      open={!!progress}
+      onCancel={onClose}
+      footer={null}
+      destroyOnHidden
+      className="eval-progress-modal"
+    >
+      {progress && (
+        <div className="eval-progress-content">
+          <div className="eval-progress-summary">
+            <div className="eval-progress-summary-item">
+              <Typography.Text type="secondary">应评价</Typography.Text>
+              <strong>{progress.summary.total}</strong>
+            </div>
+            <div className="eval-progress-summary-item is-completed">
+              <Typography.Text type="secondary">已完成</Typography.Text>
+              <strong>{progress.summary.completed}</strong>
+            </div>
+            <div className="eval-progress-summary-item is-pending">
+              <Typography.Text type="secondary">未完成</Typography.Text>
+              <strong>{progress.summary.pending}</strong>
+            </div>
+            <div className="eval-progress-summary-item">
+              <Typography.Text type="secondary">完成率</Typography.Text>
+              <strong>
+                {progress.summary.completionRate === null
+                  ? "—"
+                  : `${percentOf(progress.summary.completionRate)}%`}
+              </strong>
+            </div>
+          </div>
+
+          {progress.summary.total ? (
+            <Table
+              className="eval-progress-table"
+              rowKey="type"
+              size="middle"
+              pagination={false}
+              dataSource={progress.groups}
+              scroll={{ x: 760, y: 420 }}
+              columns={[
+                {
+                  title: "评价任务",
+                  dataIndex: "label",
+                  width: 110,
+                  render: (label: string, group: EvalProgressGroup) => (
+                    <div className="eval-progress-type-cell">
+                      <strong>{label}</strong>
+                      <Typography.Text type="secondary">
+                        {group.total} 项
+                      </Typography.Text>
+                    </div>
+                  ),
+                },
+                {
+                  title: "完成率",
+                  width: 150,
+                  render: (_value: unknown, group: EvalProgressGroup) => {
+                    const percent = percentOf(group.completionRate);
+                    return percent === null ? (
+                      <Typography.Text type="secondary">—</Typography.Text>
+                    ) : (
+                      <Progress
+                        percent={percent}
+                        size="small"
+                        strokeColor="#4f6ef7"
+                        trailColor="#eef1f6"
+                      />
+                    );
+                  },
+                },
+                {
+                  title: "已评价",
+                  render: (_value: unknown, group: EvalProgressGroup) =>
+                    renderPeople(group.completed, "completed"),
+                },
+                {
+                  title: "未评价",
+                  render: (_value: unknown, group: EvalProgressGroup) =>
+                    renderPeople(group.pending, "pending"),
+                },
+              ]}
+            />
+          ) : (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description="该员工当前没有评价任务"
+            />
+          )}
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -2143,10 +2746,7 @@ function LegacyEvalCycleDetail() {
             key: "review",
             label: "③ 复核列表",
             children: (
-              <ReviewTab
-                cycleId={cycleId}
-                refreshKey={relationRevision}
-              />
+              <ReviewTab cycleId={cycleId} refreshKey={relationRevision} />
             ),
           },
           {
@@ -2292,17 +2892,32 @@ function GenerateTab({
         <Card size="small" style={{ marginTop: 16 }} title="生成报告">
           <Space size="large" wrap>
             <Statistic title="参评总人数" value={report.memberTotal} />
-            <Statistic title="领导（已跳过）" value={report.leaderCount} />
             <Statistic title="普通员工" value={report.normalCount} />
+            <Statistic title="特殊人员" value={report.specialCount || 0} />
+            <Statistic
+              title="覆盖小组"
+              value={report.coveredGroupCount || report.groups?.length || 0}
+            />
             <Statistic title="生成关系总数" value={report.generated} />
             <Statistic title="自评" value={report.selfCount} />
             <Statistic title="他评" value={report.peerCount} />
           </Space>
-          <div style={{ marginTop: 12, color: "#888" }}>
-            校验：普通员工 {report.normalCount} 人 ⇒ 应为 {report.normalCount}{" "}
-            份自评 + {report.normalCount * (report.normalCount - 1)} 份他评 ={" "}
-            {report.normalCount * report.normalCount} 条
-          </div>
+          {report.groups?.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <Typography.Text strong>小组覆盖</Typography.Text>
+              <div style={{ marginTop: 8 }}>
+                <Space size={[6, 8]} wrap>
+                  {report.groups.map((group: any) => (
+                    <Tooltip title={group.groupPath} key={group.departmentId}>
+                      <Tag color={group.warning ? "orange" : "blue"}>
+                        {group.groupName} · {group.normalCount} 人
+                      </Tag>
+                    </Tooltip>
+                  ))}
+                </Space>
+              </div>
+            </div>
+          )}
           {report.warnings?.length > 0 && (
             <div style={{ marginTop: 12 }}>
               {report.warnings.map((w: string, i: number) => (
@@ -2396,10 +3011,31 @@ function ReviewTab({
           { title: "姓名", dataIndex: "name" },
           { title: "部门", dataIndex: "department", render: (v) => v || "—" },
           {
-            title: "角色",
-            dataIndex: "isLeader",
-            width: 80,
-            render: (v: boolean) => (v ? <Tag color="gold">领导</Tag> : "普通"),
+            title: "当期互评小组",
+            render: (_value, row) => (
+              <CompactGroupTags
+                groups={(row.groups || []).map(
+                  (group: ParticipantGroupSnapshotLite) => ({
+                    id: group.departmentId,
+                    path: group.departmentPathSnapshot,
+                    primary: group.isPrimarySnapshot,
+                    enabled: group.evalEnabled,
+                  }),
+                )}
+                fallback={row.groupName}
+              />
+            ),
+          },
+          {
+            title: "类型",
+            dataIndex: "mode",
+            width: 90,
+            render: (mode: string) =>
+              mode === "special" ? (
+                <Tag color="gold">特殊</Tag>
+              ) : (
+                <Tag color="blue">普通</Tag>
+              ),
           },
           {
             title: "自评",
@@ -2477,6 +3113,9 @@ function RelationsTab({
   const [loading, setLoading] = useState(false);
   const [contacts, setContacts] = useState<ContactLite[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
+  const [raterFilter, setRaterFilter] = useState<number>();
+  const [rateeFilter, setRateeFilter] = useState<number>();
+  const [relationPage, setRelationPage] = useState(1);
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
   const relType = Form.useWatch("relationType", form);
@@ -2520,6 +3159,56 @@ function RelationsTab({
         : http.get("/admin/contacts").then((response) => response.data || []);
     request.then(setContacts).catch(() => {});
   }, [cid, cycleId.version]);
+
+  const raterFilterOptions = useMemo(() => {
+    const people = new Map<number, { label: string; value: number }>();
+    for (const row of rows) {
+      if (people.has(row.raterContactId)) continue;
+      people.set(row.raterContactId, {
+        value: row.raterContactId,
+        label: `${row.raterName}${row.raterDepartment ? `（${row.raterDepartment}）` : ""}`,
+      });
+    }
+    return Array.from(people.values()).sort((left, right) =>
+      left.label.localeCompare(right.label, "zh-CN"),
+    );
+  }, [rows]);
+  const rateeFilterOptions = useMemo(() => {
+    const people = new Map<number, { label: string; value: number }>();
+    for (const row of rows) {
+      if (people.has(row.rateeContactId)) continue;
+      people.set(row.rateeContactId, {
+        value: row.rateeContactId,
+        label: `${row.rateeName}${row.rateeDepartment ? `（${row.rateeDepartment}）` : ""}`,
+      });
+    }
+    return Array.from(people.values()).sort((left, right) =>
+      left.label.localeCompare(right.label, "zh-CN"),
+    );
+  }, [rows]);
+  const filteredRows = useMemo(
+    () =>
+      rows.filter(
+        (row) =>
+          (raterFilter === undefined ||
+            row.raterContactId === raterFilter) &&
+          (rateeFilter === undefined || row.rateeContactId === rateeFilter),
+      ),
+    [rows, raterFilter, rateeFilter],
+  );
+
+  useEffect(() => {
+    if (
+      raterFilter !== undefined &&
+      !rows.some((row) => row.raterContactId === raterFilter)
+    )
+      setRaterFilter(undefined);
+    if (
+      rateeFilter !== undefined &&
+      !rows.some((row) => row.rateeContactId === rateeFilter)
+    )
+      setRateeFilter(undefined);
+  }, [rows, raterFilter, rateeFilter]);
 
   async function addRelation() {
     const values = await form.validateFields();
@@ -2574,8 +3263,44 @@ function RelationsTab({
               ? "人工添加关系（异常补配）"
               : "人工添加关系（领导/异常补配）"}
           </Button>
+          <Select
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            placeholder="按评价人筛选"
+            style={{ width: 240 }}
+            value={raterFilter}
+            options={raterFilterOptions}
+            onChange={(value) => {
+              setRaterFilter(value);
+              setRelationPage(1);
+            }}
+          />
+          <Select
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            placeholder="按被评人筛选"
+            style={{ width: 240 }}
+            value={rateeFilter}
+            options={rateeFilterOptions}
+            onChange={(value) => {
+              setRateeFilter(value);
+              setRelationPage(1);
+            }}
+          />
+          <Button
+            disabled={raterFilter === undefined && rateeFilter === undefined}
+            onClick={() => {
+              setRaterFilter(undefined);
+              setRateeFilter(undefined);
+              setRelationPage(1);
+            }}
+          >
+            清空筛选
+          </Button>
           <Typography.Text type="secondary">
-            共 {rows.length} 条关系
+            筛选结果 {filteredRows.length} 条 / 共 {rows.length} 条
           </Typography.Text>
         </Space>
         <Button loading={loading} onClick={() => load()}>
@@ -2585,11 +3310,13 @@ function RelationsTab({
       <Table
         rowKey="id"
         loading={loading}
-        dataSource={rows}
+        dataSource={filteredRows}
         size="small"
         locale={{ emptyText: "暂无评价关系，请先生成或人工添加" }}
         pagination={{
+          current: relationPage,
           pageSize: 20,
+          onChange: setRelationPage,
           showTotal: (total) => `共 ${total} 条`,
         }}
         columns={[
@@ -2601,9 +3328,7 @@ function RelationsTab({
             width: 100,
             render: (v: string) => (
               <Tag
-                color={
-                  v === "self" ? "blue" : v === "peer" ? "cyan" : "gold"
-                }
+                color={v === "self" ? "blue" : v === "peer" ? "cyan" : "gold"}
               >
                 {TYPE_LABEL[v] || v}
               </Tag>
@@ -2612,10 +3337,29 @@ function RelationsTab({
           {
             title: "来源",
             dataIndex: "source",
-            width: 90,
-            render: (v: string) =>
+            width: 260,
+            render: (v: string, row: any) =>
               v === "manual" ? (
                 <Tag color="purple">人工</Tag>
+              ) : row.relationType === "self" ? (
+                <Tag color="green">自动·自评</Tag>
+              ) : row.sharedGroups?.length ? (
+                <Space size={[4, 4]} wrap>
+                  {row.sharedGroups.map(
+                    (group: {
+                      departmentId: number | null;
+                      name: string;
+                      path: string;
+                    }) => (
+                      <Tooltip
+                        title={group.path}
+                        key={`${group.departmentId}:${group.path}`}
+                      >
+                        <Tag color="blue">自动·{group.name}</Tag>
+                      </Tooltip>
+                    ),
+                  )}
+                </Space>
               ) : (
                 <Tag>自动</Tag>
               ),
@@ -2664,9 +3408,7 @@ function RelationsTab({
               options={[
                 { label: "自评", value: "self" },
                 { label: "他评", value: "peer" },
-                ...(!isV2
-                  ? [{ label: "领导评价", value: "leader" }]
-                  : []),
+                ...(!isV2 ? [{ label: "领导评价", value: "leader" }] : []),
               ]}
             />
           </Form.Item>

@@ -12,6 +12,12 @@ import { randomBytes } from 'crypto';
 import { PrismaService } from './prisma.service';
 import { calculateEmployeeScore } from './eval-scoring';
 import {
+  buildMultiGroupAutoRelations,
+  findSharedEnabledGroups,
+  type MultiGroupParticipant,
+  type ParticipantGroupSnapshotInput,
+} from './eval-participant-groups';
+import {
   EVAL_CYCLE_STATUSES,
   EvalAnswer,
   EvalCycleStatus,
@@ -40,6 +46,172 @@ export type AutoRelation = {
   type: 'self' | 'peer';
   surveyId: number;
 };
+
+type SnapshotDepartment = {
+  id: number;
+  code: string;
+  name: string;
+  parentId: number | null;
+  isActive: boolean;
+};
+
+type PlannedParticipantGroup = ParticipantGroupSnapshotInput & {
+  departmentCodeSnapshot: string;
+  roleNameSnapshot: string | null;
+};
+
+type PlannedParticipant = {
+  contactId: number;
+  nameSnapshot: string;
+  jobNoSnapshot: string | null;
+  departmentSnapshot: string;
+  positionSnapshot: string | null;
+  groupKey: string;
+  groupName: string;
+  groups: PlannedParticipantGroup[];
+};
+
+export type DepartmentResultParticipant = {
+  contactId: number;
+  departmentSnapshot?: string | null;
+  groupSnapshots?: Array<{
+    departmentPathSnapshot?: string | null;
+  }>;
+  result?: {
+    totalScore?: unknown;
+    dimensionScoresJson?: unknown;
+  } | null;
+};
+
+export type DepartmentSummaryRow = {
+  level: number;
+  name: string;
+  path: string;
+  participantCount: number;
+  scoredParticipantCount: number;
+  dimensionAverages: Record<string, number | null>;
+  totalAverage: number | null;
+};
+
+function parseDepartmentPath(path: unknown): string[] {
+  return String(path || '')
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function finiteScore(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+export function buildDepartmentSummaryRows(
+  participants: DepartmentResultParticipant[],
+  dimensionIds: string[],
+): DepartmentSummaryRow[] {
+  type Aggregate = {
+    level: number;
+    name: string;
+    path: string;
+    participantIds: Set<number>;
+    scoredParticipantIds: Set<number>;
+    totalSum: number;
+    totalCount: number;
+    dimensionSums: Map<string, number>;
+    dimensionCounts: Map<string, number>;
+  };
+
+  const aggregates = new Map<string, Aggregate>();
+
+  for (const participant of participants) {
+    const snapshotPaths = (participant.groupSnapshots || [])
+      .map((snapshot) => parseDepartmentPath(snapshot.departmentPathSnapshot))
+      .filter((parts) => parts.length > 0);
+    const paths = snapshotPaths.length
+      ? snapshotPaths
+      : [parseDepartmentPath(participant.departmentSnapshot || '未分组')];
+    const participantNodePaths = new Set<string>();
+
+    for (const parts of paths) {
+      for (let index = 0; index < parts.length; index += 1) {
+        participantNodePaths.add(parts.slice(0, index + 1).join('/'));
+      }
+    }
+
+    const totalScore = finiteScore(participant.result?.totalScore);
+    const dimensionScores = new Map<string, number>();
+    if (totalScore !== null && Array.isArray(participant.result?.dimensionScoresJson)) {
+      for (const item of participant.result.dimensionScoresJson as Array<{
+        dimensionId?: unknown;
+        score?: unknown;
+      }>) {
+        const dimensionId = String(item?.dimensionId || '');
+        const score = finiteScore(item?.score);
+        if (dimensionId && score !== null) dimensionScores.set(dimensionId, score);
+      }
+    }
+
+    for (const path of participantNodePaths) {
+      const parts = parseDepartmentPath(path);
+      if (!parts.length) continue;
+      if (!aggregates.has(path)) {
+        aggregates.set(path, {
+          level: parts.length,
+          name: parts[parts.length - 1],
+          path,
+          participantIds: new Set(),
+          scoredParticipantIds: new Set(),
+          totalSum: 0,
+          totalCount: 0,
+          dimensionSums: new Map(),
+          dimensionCounts: new Map(),
+        });
+      }
+      const aggregate = aggregates.get(path)!;
+      aggregate.participantIds.add(participant.contactId);
+      if (totalScore === null) continue;
+
+      aggregate.scoredParticipantIds.add(participant.contactId);
+      aggregate.totalSum += totalScore;
+      aggregate.totalCount += 1;
+      for (const dimensionId of dimensionIds) {
+        const score = dimensionScores.get(dimensionId);
+        if (score === undefined) continue;
+        aggregate.dimensionSums.set(
+          dimensionId,
+          (aggregate.dimensionSums.get(dimensionId) || 0) + score,
+        );
+        aggregate.dimensionCounts.set(
+          dimensionId,
+          (aggregate.dimensionCounts.get(dimensionId) || 0) + 1,
+        );
+      }
+    }
+  }
+
+  return Array.from(aggregates.values()).map((aggregate) => ({
+    level: aggregate.level,
+    name: aggregate.name,
+    path: aggregate.path,
+    participantCount: aggregate.participantIds.size,
+    scoredParticipantCount: aggregate.scoredParticipantIds.size,
+    dimensionAverages: Object.fromEntries(
+      dimensionIds.map((dimensionId) => {
+        const count = aggregate.dimensionCounts.get(dimensionId) || 0;
+        return [
+          dimensionId,
+          count
+            ? (aggregate.dimensionSums.get(dimensionId) || 0) / count
+            : null,
+        ];
+      }),
+    ),
+    totalAverage: aggregate.totalCount
+      ? aggregate.totalSum / aggregate.totalCount
+      : null,
+  }));
+}
 
 /**
  * 纯函数：给定组内成员 + 领导集合 + 两份问卷模板，算出普通员工的自评 + 互评关系。
@@ -293,87 +465,374 @@ export class EvalService {
 
   // ── 新版参评人员快照 ──
 
-  async getParticipantCandidates() {
-    const contacts = await this.prisma.contact.findMany({
-      orderBy: [{ department: 'asc' }, { name: 'asc' }],
-    });
-    const departmentCounts = new Map<string, number>();
+  private departmentPathMap(departments: SnapshotDepartment[]) {
+    const byId = new Map(
+      departments.map((department) => [department.id, department]),
+    );
+    const paths = new Map<number, string>();
+    const resolving = new Set<number>();
+    const resolve = (departmentId: number): string => {
+      const cached = paths.get(departmentId);
+      if (cached) return cached;
+      const department = byId.get(departmentId);
+      if (!department) return '';
+      if (resolving.has(departmentId)) return department.name;
+      resolving.add(departmentId);
+      const parentPath = department.parentId
+        ? resolve(department.parentId)
+        : '';
+      resolving.delete(departmentId);
+      const path = parentPath
+        ? `${parentPath}/${department.name}`
+        : department.name;
+      paths.set(departmentId, path);
+      return path;
+    };
+    departments.forEach((department) => resolve(department.id));
+    return paths;
+  }
+
+  private summarizeParticipantPlan(
+    participants: PlannedParticipant[],
+    warnings: string[],
+  ) {
+    const enabledGroups = new Map<
+      number,
+      {
+        departmentId: number;
+        name: string;
+        path: string;
+        memberIds: Set<number>;
+      }
+    >();
+    let multiGroupParticipantCount = 0;
+    for (const participant of participants) {
+      const enabled = participant.groups.filter((group) => group.evalEnabled);
+      if (enabled.length > 1) multiGroupParticipantCount += 1;
+      for (const group of enabled) {
+        const current = enabledGroups.get(group.departmentId) || {
+          departmentId: group.departmentId,
+          name: group.departmentNameSnapshot,
+          path: group.departmentPathSnapshot,
+          memberIds: new Set<number>(),
+        };
+        current.memberIds.add(participant.contactId);
+        enabledGroups.set(group.departmentId, current);
+      }
+    }
+    const singlePersonGroups = Array.from(enabledGroups.values())
+      .filter((group) => group.memberIds.size === 1)
+      .map((group) => ({
+        departmentId: group.departmentId,
+        name: group.name,
+        path: group.path,
+        contactId: Array.from(group.memberIds)[0],
+      }));
+    return {
+      participantCount: participants.length,
+      enabledGroupCount: enabledGroups.size,
+      multiGroupParticipantCount,
+      singlePersonGroupCount: singlePersonGroups.length,
+      singlePersonGroups,
+      warnings,
+    };
+  }
+
+  private async planParticipantSnapshots(contactIds: number[]) {
+    const [contacts, departments] = await Promise.all([
+      this.prisma.contact.findMany({
+        where: { id: { in: contactIds } },
+        include: {
+          memberships: {
+            include: { department: true },
+            orderBy: [{ isPrimary: 'desc' }, { id: 'asc' }],
+          },
+        },
+      }),
+      this.prisma.orgDepartment.findMany(),
+    ]);
+    if (contacts.length !== contactIds.length) {
+      throw new BadRequestException('部分联系人不存在，请刷新后重试');
+    }
+    const pathMap = this.departmentPathMap(departments);
+    const parentIds = new Set(
+      departments
+        .filter((department) => department.parentId !== null)
+        .map((department) => department.parentId as number),
+    );
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    const participants: PlannedParticipant[] = [];
+
     for (const contact of contacts) {
-      const department = contact.department?.trim() || '未分组';
-      departmentCounts.set(
-        department,
-        (departmentCounts.get(department) || 0) + 1,
+      if (!contact.isActive) {
+        errors.push(`${contact.name}：联系人已停用`);
+        continue;
+      }
+      const departmentIds = contact.memberships.map(
+        (membership) => membership.departmentId,
       );
+      if (new Set(departmentIds).size !== departmentIds.length) {
+        errors.push(`${contact.name}：存在重复部门归属`);
+        continue;
+      }
+      const primaryMemberships = contact.memberships.filter(
+        (membership) => membership.isPrimary,
+      );
+      if (primaryMemberships.length !== 1) {
+        errors.push(
+          `${contact.name}：需要且只能设置一个主部门（当前 ${primaryMemberships.length} 个）`,
+        );
+        continue;
+      }
+      const primary = primaryMemberships[0];
+      if (!primary.department.isActive) {
+        errors.push(
+          `${contact.name}：主部门“${primary.department.name}”已停用`,
+        );
+        continue;
+      }
+      if (parentIds.has(primary.departmentId)) {
+        warnings.push(
+          `${contact.name}：主部门“${primary.department.name}”包含下级部门，仍仅按本人明确归属参与互评`,
+        );
+      }
+      const groups = contact.memberships.map((membership) => {
+        const path =
+          pathMap.get(membership.departmentId) || membership.department.name;
+        const evalEnabled = membership.isPrimary
+          ? true
+          : membership.department.isActive && membership.defaultEvalEnabled;
+        if (!membership.isPrimary && !membership.department.isActive) {
+          warnings.push(
+            `${contact.name}：兼任部门“${path}”已停用，本批次默认关闭互评`,
+          );
+        }
+        return {
+          departmentId: membership.departmentId,
+          departmentCodeSnapshot: membership.department.code,
+          departmentNameSnapshot: membership.department.name,
+          departmentPathSnapshot: path,
+          isPrimarySnapshot: membership.isPrimary,
+          evalEnabled,
+          roleNameSnapshot: membership.roleName,
+        };
+      });
+      const primaryPath =
+        pathMap.get(primary.departmentId) || primary.department.name;
+      participants.push({
+        contactId: contact.id,
+        nameSnapshot: contact.name,
+        jobNoSnapshot: contact.jobNo,
+        departmentSnapshot: primaryPath,
+        positionSnapshot: contact.position,
+        groupKey: String(primary.departmentId),
+        groupName: primaryPath,
+        groups,
+      });
+    }
+    if (errors.length) throw new BadRequestException({ message: errors });
+    participants.sort((left, right) => left.contactId - right.contactId);
+    return {
+      participants,
+      summary: this.summarizeParticipantPlan(participants, warnings),
+    };
+  }
+
+  private async assertParticipantSnapshotsMutable(cycleId: number) {
+    const cycle = await this.requireDraftCycle(cycleId);
+    const submitted = await this.prisma.evalRelation.count({
+      where: { cycleId, responseId: { not: null } },
+    });
+    if (submitted) throw new BadRequestException('已有答卷，不能调整参评人员');
+    return cycle;
+  }
+
+  async getParticipantCandidates() {
+    const [contacts, departments] = await Promise.all([
+      this.prisma.contact.findMany({
+        where: { isActive: true },
+        include: {
+          memberships: {
+            include: { department: true },
+            orderBy: [{ isPrimary: 'desc' }, { id: 'asc' }],
+          },
+        },
+        orderBy: [{ name: 'asc' }, { id: 'asc' }],
+      }),
+      this.prisma.orgDepartment.findMany({
+        orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
+      }),
+    ]);
+    const pathMap = this.departmentPathMap(departments);
+    const departmentCounts = new Map<number, Set<number>>();
+    for (const contact of contacts) {
+      for (const membership of contact.memberships) {
+        if (!membership.department.isActive) continue;
+        const members =
+          departmentCounts.get(membership.departmentId) || new Set();
+        members.add(contact.id);
+        departmentCounts.set(membership.departmentId, members);
+      }
     }
     return {
-      departments: Array.from(departmentCounts, ([name, count]) => ({
-        name,
-        count,
+      departments: departments
+        .filter((department) => department.isActive)
+        .map((department) => ({
+          id: department.id,
+          name: department.name,
+          path: pathMap.get(department.id) || department.name,
+          count: departmentCounts.get(department.id)?.size || 0,
+        })),
+      contacts: contacts.map((contact) => ({
+        ...contact,
+        memberships: contact.memberships.map((membership) => ({
+          departmentId: membership.departmentId,
+          departmentName: membership.department.name,
+          departmentPath:
+            pathMap.get(membership.departmentId) || membership.department.name,
+          isPrimary: membership.isPrimary,
+          defaultEvalEnabled: membership.isPrimary
+            ? true
+            : membership.defaultEvalEnabled,
+          roleName: membership.roleName,
+          isActive: membership.department.isActive,
+        })),
       })),
-      contacts,
     };
   }
 
   async listParticipants(cycleId: number) {
     await this.getCycle(cycleId);
-    return this.prisma.evalCycleParticipant.findMany({
-      where: { cycleId },
-      orderBy: [{ groupName: 'asc' }, { nameSnapshot: 'asc' }],
-    });
+    const [participants, latestAutoRelation, latestGroupSnapshot] =
+      await Promise.all([
+        this.prisma.evalCycleParticipant.findMany({
+          where: { cycleId },
+          include: {
+            groupSnapshots: {
+              orderBy: [{ isPrimarySnapshot: 'desc' }, { id: 'asc' }],
+            },
+          },
+          orderBy: [{ groupName: 'asc' }, { nameSnapshot: 'asc' }],
+        }),
+        this.prisma.evalRelation.aggregate({
+          where: { cycleId, source: 'auto' },
+          _max: { createdAt: true },
+        }),
+        this.prisma.evalParticipantGroupSnapshot.aggregate({
+          where: { participant: { cycleId } },
+          _max: { updatedAt: true },
+        }),
+      ]);
+    const autoCreatedAt = latestAutoRelation._max.createdAt;
+    const groupUpdatedAt = latestGroupSnapshot._max.updatedAt;
+    const relationsNeedRegeneration =
+      participants.length > 0 &&
+      (!autoCreatedAt ||
+        (!!groupUpdatedAt &&
+          groupUpdatedAt.getTime() > autoCreatedAt.getTime()));
+    return participants.map((participant) => ({
+      ...participant,
+      groups: participant.groupSnapshots,
+      relationsNeedRegeneration,
+    }));
   }
 
-  async replaceParticipants(cycleId: number, data: any, adminId: number) {
-    const cycle = await this.requireDraftCycle(cycleId);
+  async previewParticipants(cycleId: number, data: any) {
+    await this.assertParticipantSnapshotsMutable(cycleId);
     const contactIds = uniquePositiveIds(data?.contactIds || []);
     if (!contactIds.length)
       throw new BadRequestException('请至少选择一名参评人员');
-    const submitted = await this.prisma.evalRelation.count({
-      where: { cycleId, responseId: { not: null } },
-    });
-    if (submitted) throw new BadRequestException('已有答卷，不能替换参评人员');
-    const contacts = await this.prisma.contact.findMany({
-      where: { id: { in: contactIds } },
-    });
-    if (contacts.length !== contactIds.length)
-      throw new BadRequestException('部分联系人不存在，请刷新后重试');
-    const customGroups =
-      data?.groups && typeof data.groups === 'object'
-        ? (data.groups as Record<string, string>)
-        : {};
+    const planned = await this.planParticipantSnapshots(contactIds);
+    return planned.summary;
+  }
+
+  async replaceParticipants(cycleId: number, data: any, adminId: number) {
+    const cycle = await this.assertParticipantSnapshotsMutable(cycleId);
+    const contactIds = uniquePositiveIds(data?.contactIds || []);
+    if (!contactIds.length)
+      throw new BadRequestException('请至少选择一名参评人员');
+    const planned = await this.planParticipantSnapshots(contactIds);
+    let deletedManualCount = 0;
+    let preservedManualCount = 0;
     await this.prisma.$transaction(async (tx) => {
-      await tx.evalRelation.deleteMany({ where: { cycleId } });
-      await tx.evalCycleParticipant.deleteMany({ where: { cycleId } });
-      await tx.evalCycleParticipant.createMany({
-        data: contacts.map((contact) => {
-          const groupName =
-            String(
-              customGroups[String(contact.id)] ||
-                contact.department ||
-                '未分组',
-            ).trim() || '未分组';
-          return {
-            cycleId,
-            contactId: contact.id,
-            nameSnapshot: contact.name,
-            jobNoSnapshot: contact.jobNo,
-            departmentSnapshot: contact.department,
-            positionSnapshot: contact.position,
-            groupKey: groupName,
-            groupName,
-          };
-        }),
+      const existingParticipants = await tx.evalCycleParticipant.findMany({
+        where: { cycleId, contactId: { in: contactIds } },
+        select: {
+          contactId: true,
+          mode: true,
+          peerExempt: true,
+          exceptionReason: true,
+        },
       });
+      const existingSettings = new Map(
+        existingParticipants.map((participant) => [
+          participant.contactId,
+          participant,
+        ]),
+      );
+      await tx.evalRelation.deleteMany({
+        where: { cycleId, source: 'auto' },
+      });
+      const removedManual = await tx.evalRelation.deleteMany({
+        where: {
+          cycleId,
+          source: 'manual',
+          OR: [
+            { raterContactId: { notIn: contactIds } },
+            { rateeContactId: { notIn: contactIds } },
+          ],
+        },
+      });
+      deletedManualCount = removedManual.count;
+      preservedManualCount = await tx.evalRelation.count({
+        where: { cycleId, source: 'manual' },
+      });
+      await tx.evalCycleParticipant.deleteMany({ where: { cycleId } });
+      for (const participant of planned.participants) {
+        const previous = existingSettings.get(participant.contactId);
+        await tx.evalCycleParticipant.create({
+          data: {
+            cycleId,
+            contactId: participant.contactId,
+            nameSnapshot: participant.nameSnapshot,
+            jobNoSnapshot: participant.jobNoSnapshot,
+            departmentSnapshot: participant.departmentSnapshot,
+            positionSnapshot: participant.positionSnapshot,
+            groupKey: participant.groupKey,
+            groupName: participant.groupName,
+            mode: previous?.mode || 'normal',
+            peerExempt: previous?.peerExempt || false,
+            exceptionReason: previous?.exceptionReason || null,
+            groupSnapshots: {
+              create: participant.groups,
+            },
+          },
+        });
+      }
       await tx.evalAuditLog.create({
         data: {
           cycleId,
           action: 'replace_participants',
           targetType: 'cycle_participants',
-          afterJson: { contactIds } as Prisma.InputJsonValue,
+          afterJson: {
+            contactIds,
+            ...planned.summary,
+            preservedManualCount,
+            deletedManualCount,
+          } as Prisma.InputJsonValue,
           adminId,
         },
       });
     });
-    return { cycleId: cycle.id, count: contacts.length };
+    return {
+      cycleId: cycle.id,
+      count: planned.participants.length,
+      ...planned.summary,
+      preservedManualCount,
+      deletedManualCount,
+      relationsNeedRegeneration: true,
+    };
   }
 
   async copyParticipants(
@@ -391,15 +850,82 @@ export class EvalService {
       cycleId,
       {
         contactIds: source.map((participant) => participant.contactId),
-        groups: Object.fromEntries(
-          source.map((participant) => [
-            participant.contactId,
-            participant.groupName,
-          ]),
-        ),
       },
       adminId,
     );
+  }
+
+  async updateParticipantGroups(
+    cycleId: number,
+    participantId: number,
+    data: any,
+    adminId: number,
+  ) {
+    await this.assertParticipantSnapshotsMutable(cycleId);
+    const participant = await this.prisma.evalCycleParticipant.findFirst({
+      where: { id: participantId, cycleId },
+      include: { groupSnapshots: true },
+    });
+    if (!participant) throw new NotFoundException('参评人员不存在');
+    if (!participant.groupSnapshots.length) {
+      throw new BadRequestException(
+        '历史批次没有多部门快照，请先重新确认人员范围',
+      );
+    }
+    const requested = Array.isArray(data?.groups) ? data.groups : [];
+    const requestedByDepartment = new Map<number, boolean>();
+    for (const item of requested) {
+      const departmentId = Number(item?.departmentId);
+      if (!Number.isInteger(departmentId) || departmentId <= 0) {
+        throw new BadRequestException('部门参数不合法');
+      }
+      requestedByDepartment.set(departmentId, Boolean(item?.evalEnabled));
+    }
+    const knownIds = new Set(
+      participant.groupSnapshots.map((group) => group.departmentId),
+    );
+    const unknownId = Array.from(requestedByDepartment.keys()).find(
+      (departmentId) => !knownIds.has(departmentId),
+    );
+    if (unknownId) {
+      throw new BadRequestException('只能调整当前批次已经快照的兼任部门');
+    }
+    const before = participant.groupSnapshots;
+    await this.prisma.$transaction(async (tx) => {
+      for (const group of participant.groupSnapshots) {
+        const requestedEnabled = requestedByDepartment.get(group.departmentId);
+        const evalEnabled = group.isPrimarySnapshot
+          ? true
+          : requestedEnabled === undefined
+            ? group.evalEnabled
+            : requestedEnabled;
+        if (evalEnabled !== group.evalEnabled) {
+          await tx.evalParticipantGroupSnapshot.update({
+            where: { id: group.id },
+            data: { evalEnabled },
+          });
+        }
+      }
+      const after = participant.groupSnapshots.map((group) => ({
+        ...group,
+        evalEnabled: group.isPrimarySnapshot
+          ? true
+          : (requestedByDepartment.get(group.departmentId) ??
+            group.evalEnabled),
+      }));
+      await tx.evalAuditLog.create({
+        data: {
+          cycleId,
+          action: 'update_participant_groups',
+          targetType: 'participant',
+          targetId: String(participantId),
+          beforeJson: toJsonInput(before),
+          afterJson: toJsonInput(after),
+          adminId,
+        },
+      });
+    });
+    return { ok: true, relationsNeedRegeneration: true };
   }
 
   async updateParticipant(
@@ -555,6 +1081,7 @@ export class EvalService {
     await this.getTemplate(cycle.templateSurveyId);
     const participants = await this.prisma.evalCycleParticipant.findMany({
       where: { cycleId },
+      include: { groupSnapshots: true },
       orderBy: { id: 'asc' },
     });
     if (!participants.length) throw new BadRequestException('请先确认参评人员');
@@ -566,48 +1093,74 @@ export class EvalService {
     if (submitted)
       throw new BadRequestException('批次已有答卷，不能重新生成关系');
 
-    const groups = new Map<string, typeof participants>();
-    for (const participant of participants.filter(
-      (item) => item.mode === 'normal',
-    )) {
-      const rows = groups.get(participant.groupKey) || [];
-      rows.push(participant);
-      groups.set(participant.groupKey, rows);
-    }
-    const rels: AutoRelation[] = [];
-    const groupReports: Array<{
-      groupName: string;
-      normalCount: number;
-      relationCount: number;
-      warning?: string;
-    }> = [];
-    for (const [groupName, rows] of groups) {
-      const built = buildAutoRelations(
-        rows.map((row) => row.contactId),
-        new Set<number>(),
-        cycle.templateSurveyId,
-        cycle.templateSurveyId,
+    const participantsWithSnapshots = participants.filter(
+      (participant) => participant.groupSnapshots.length > 0,
+    ).length;
+    if (
+      participantsWithSnapshots > 0 &&
+      participantsWithSnapshots !== participants.length
+    ) {
+      throw new BadRequestException(
+        '部分参评人员缺少多部门快照，请重新确认人员范围',
       );
-      rels.push(...built);
-      groupReports.push({
-        groupName,
-        normalCount: rows.length,
-        relationCount: built.length,
-        ...(rows.length === 1
-          ? { warning: '单人组只有自评，请人工补配跨组评价或登记他评豁免' }
-          : {}),
-      });
     }
+
+    const legacyDepartmentIds = new Map<string, number>();
+    const generationInput: MultiGroupParticipant[] = participants.map(
+      (participant) => {
+        let groups: ParticipantGroupSnapshotInput[] =
+          participant.groupSnapshots;
+        if (!groups.length) {
+          if (!legacyDepartmentIds.has(participant.groupKey)) {
+            legacyDepartmentIds.set(
+              participant.groupKey,
+              -(legacyDepartmentIds.size + 1),
+            );
+          }
+          groups = [
+            {
+              departmentId: legacyDepartmentIds.get(participant.groupKey)!,
+              departmentNameSnapshot: participant.groupName,
+              departmentPathSnapshot: participant.groupName,
+              isPrimarySnapshot: true,
+              evalEnabled: true,
+            },
+          ];
+        }
+        return {
+          participantId: participant.id,
+          contactId: participant.contactId,
+          mode: participant.mode,
+          groups,
+        };
+      },
+    );
+    const report = buildMultiGroupAutoRelations(generationInput);
+    const manualRelations = await this.prisma.evalRelation.findMany({
+      where: { cycleId, source: 'manual' },
+      select: { raterContactId: true, rateeContactId: true },
+    });
+    const manualKeys = new Set(
+      manualRelations.map(
+        (relation) => `${relation.raterContactId}:${relation.rateeContactId}`,
+      ),
+    );
+    const generatedRelations = report.relations.filter(
+      (relation) =>
+        !manualKeys.has(
+          `${relation.raterContactId}:${relation.rateeContactId}`,
+        ),
+    );
 
     await this.prisma.$transaction(async (tx) => {
       await tx.evalRelation.deleteMany({ where: { cycleId, source: 'auto' } });
-      if (rels.length) {
+      if (generatedRelations.length) {
         await tx.evalRelation.createMany({
-          data: rels.map((relation) => ({
+          data: generatedRelations.map((relation) => ({
             cycleId,
-            raterContactId: relation.rater,
-            rateeContactId: relation.ratee,
-            relationType: relation.type,
+            raterContactId: relation.raterContactId,
+            rateeContactId: relation.rateeContactId,
+            relationType: relation.relationType,
             surveyId: cycle.templateSurveyId!,
             source: 'auto',
             status: 'pending',
@@ -625,13 +1178,16 @@ export class EvalService {
       normalCount: participants.filter(
         (participant) => participant.mode === 'normal',
       ).length,
-      generated: rels.length,
-      selfCount: rels.filter((relation) => relation.type === 'self').length,
-      peerCount: rels.filter((relation) => relation.type === 'peer').length,
-      groups: groupReports,
-      warnings: groupReports.flatMap((group) =>
-        group.warning ? [`${group.groupName}：${group.warning}`] : [],
-      ),
+      generated: generatedRelations.length,
+      selfCount: generatedRelations.filter(
+        (relation) => relation.relationType === 'self',
+      ).length,
+      peerCount: generatedRelations.filter(
+        (relation) => relation.relationType === 'peer',
+      ).length,
+      coveredGroupCount: report.coveredGroupCount,
+      groups: report.groupReports,
+      warnings: report.warnings,
     };
   }
 
@@ -743,6 +1299,11 @@ export class EvalService {
     const [participants, relations] = await Promise.all([
       this.prisma.evalCycleParticipant.findMany({
         where: { cycleId },
+        include: {
+          groupSnapshots: {
+            orderBy: [{ isPrimarySnapshot: 'desc' }, { id: 'asc' }],
+          },
+        },
         orderBy: [{ groupName: 'asc' }, { nameSnapshot: 'asc' }],
       }),
       this.prisma.evalRelation.findMany({ where: { cycleId } }),
@@ -799,6 +1360,7 @@ export class EvalService {
         jobNo: participant.jobNoSnapshot,
         department: participant.departmentSnapshot,
         groupName: participant.groupName,
+        groups: participant.groupSnapshots,
         mode: participant.mode,
         peerExempt: participant.peerExempt,
         hasSelf: !!selfRelation,
@@ -851,19 +1413,59 @@ export class EvalService {
     });
     const [contacts, participants] = await Promise.all([
       this.prisma.contact.findMany({ where: { id: { in: Array.from(ids) } } }),
-      cycle.version >= 2
-        ? this.prisma.evalCycleParticipant.findMany({ where: { cycleId } })
-        : Promise.resolve([]),
+      this.prisma.evalCycleParticipant.findMany({
+        where: { cycleId },
+        include: { groupSnapshots: true },
+      }),
     ]);
     const nameOf = new Map(contacts.map((c) => [c.id, c.name]));
     for (const participant of participants)
       nameOf.set(participant.contactId, participant.nameSnapshot);
-    return relations.map((r) => ({
-      ...r,
-      raterName: nameOf.get(r.raterContactId) ?? `#${r.raterContactId}`,
-      rateeName: nameOf.get(r.rateeContactId) ?? `#${r.rateeContactId}`,
-      done: !!r.responseId,
-    }));
+    const participantByContactId = new Map(
+      participants.map((participant) => [participant.contactId, participant]),
+    );
+    return relations.map((r) => {
+      let sharedGroups: Array<{
+        departmentId: number | null;
+        name: string;
+        path: string;
+      }> = [];
+      if (r.source === 'auto' && r.relationType === 'peer') {
+        const rater = participantByContactId.get(r.raterContactId);
+        const ratee = participantByContactId.get(r.rateeContactId);
+        if (rater && ratee) {
+          if (rater.groupSnapshots.length && ratee.groupSnapshots.length) {
+            sharedGroups = findSharedEnabledGroups(
+              rater.groupSnapshots,
+              ratee.groupSnapshots,
+            );
+          } else if (rater.groupKey === ratee.groupKey) {
+            sharedGroups = [
+              {
+                departmentId: null,
+                name: rater.groupName,
+                path: rater.groupName,
+              },
+            ];
+          }
+        }
+      }
+      return {
+        ...r,
+        raterName: nameOf.get(r.raterContactId) ?? `#${r.raterContactId}`,
+        rateeName: nameOf.get(r.rateeContactId) ?? `#${r.rateeContactId}`,
+        raterDepartment:
+          participantByContactId.get(r.raterContactId)?.departmentSnapshot ||
+          participantByContactId.get(r.raterContactId)?.groupName ||
+          '',
+        rateeDepartment:
+          participantByContactId.get(r.rateeContactId)?.departmentSnapshot ||
+          participantByContactId.get(r.rateeContactId)?.groupName ||
+          '',
+        sharedGroups,
+        done: !!r.responseId,
+      };
+    });
   }
 
   async addManualRelation(cycleId: number, data: any) {
@@ -1203,6 +1805,7 @@ export class EvalService {
     const cycle = await this.getCycle(cycleId);
     const participants = await this.prisma.evalCycleParticipant.findMany({
       where: { cycleId },
+      include: { groupSnapshots: true },
       orderBy: [{ groupName: 'asc' }, { nameSnapshot: 'asc' }],
     });
     if (!['locked', 'archived'].includes(cycle.status)) {
@@ -1219,6 +1822,134 @@ export class EvalService {
       ...participant,
       result: resultMap.get(participant.contactId) || null,
     }));
+  }
+
+  async getRaterProgress(cycleId: number, contactId: number) {
+    await this.getCycle(cycleId);
+    const participant = await this.prisma.evalCycleParticipant.findUnique({
+      where: { cycleId_contactId: { cycleId, contactId } },
+      include: { groupSnapshots: true },
+    });
+    if (!participant) throw new NotFoundException('该员工不在本批次参评范围');
+
+    const relations = await this.prisma.evalRelation.findMany({
+      where: { cycleId, raterContactId: contactId },
+      orderBy: [{ relationType: 'asc' }, { id: 'asc' }],
+    });
+    const rateeIds = Array.from(
+      new Set(relations.map((relation) => relation.rateeContactId)),
+    );
+    const [rateeParticipants, fallbackContacts] = await Promise.all([
+      this.prisma.evalCycleParticipant.findMany({
+        where: { cycleId, contactId: { in: rateeIds } },
+        include: { groupSnapshots: true },
+      }),
+      this.prisma.contact.findMany({
+        where: { id: { in: rateeIds } },
+        select: { id: true, name: true },
+      }),
+    ]);
+    const participantOf = new Map(
+      rateeParticipants.map((value) => [value.contactId, value]),
+    );
+    const fallbackNameOf = new Map(
+      fallbackContacts.map((value) => [value.id, value.name]),
+    );
+
+    const itemOf = (relation: (typeof relations)[number]) => {
+      const ratee = participantOf.get(relation.rateeContactId);
+      let sharedGroups: Array<{
+        departmentId: number | null;
+        name: string;
+        path: string;
+      }> = [];
+      if (
+        relation.source === 'auto' &&
+        relation.relationType === 'peer' &&
+        ratee
+      ) {
+        if (
+          participant.groupSnapshots.length &&
+          ratee.groupSnapshots.length
+        ) {
+          sharedGroups = findSharedEnabledGroups(
+            participant.groupSnapshots,
+            ratee.groupSnapshots,
+          );
+        } else if (participant.groupKey === ratee.groupKey) {
+          sharedGroups = [
+            {
+              departmentId: null,
+              name: participant.groupName,
+              path: participant.groupName,
+            },
+          ];
+        }
+      }
+      return {
+        relationId: relation.id,
+        contactId: relation.rateeContactId,
+        name:
+          ratee?.nameSnapshot ||
+          fallbackNameOf.get(relation.rateeContactId) ||
+          `#${relation.rateeContactId}`,
+        source: relation.source,
+        sharedGroups,
+      };
+    };
+
+    const definitions = [
+      { type: 'self', label: '自评' },
+      { type: 'peer', label: '同事互评' },
+      { type: 'leader', label: '领导评价' },
+    ];
+    const groups = definitions.flatMap((definition) => {
+      const rows = relations.filter(
+        (relation) => relation.relationType === definition.type,
+      );
+      if (definition.type === 'leader' && !rows.length) return [];
+      const completed = rows
+        .filter(
+          (relation) =>
+            relation.status === 'submitted' && !!relation.responseId,
+        )
+        .map(itemOf);
+      const pending = rows
+        .filter(
+          (relation) =>
+            relation.status !== 'submitted' || !relation.responseId,
+        )
+        .map(itemOf);
+      return [
+        {
+          ...definition,
+          total: rows.length,
+          completedCount: completed.length,
+          pendingCount: pending.length,
+          completionRate: rows.length ? completed.length / rows.length : null,
+          completed,
+          pending,
+        },
+      ];
+    });
+    const completed = groups.reduce(
+      (total, group) => total + group.completedCount,
+      0,
+    );
+    const total = relations.length;
+    return {
+      participant: {
+        contactId: participant.contactId,
+        name: participant.nameSnapshot,
+      },
+      summary: {
+        total,
+        completed,
+        pending: total - completed,
+        completionRate: total ? completed / total : null,
+      },
+      groups,
+    };
   }
 
   async getEmployeeReport(cycleId: number, contactId: number) {
@@ -1915,6 +2646,51 @@ export class EvalService {
       }
       summarySheet.addRow(values);
     }
+
+    const departmentSheet = workbook.addWorksheet('部门数据');
+    departmentSheet.columns = [
+      { header: '部门层级', key: 'level', width: 12 },
+      { header: '部门名称', key: 'name', width: 20 },
+      { header: '完整部门路径', key: 'path', width: 42 },
+      { header: '部门人数', key: 'participantCount', width: 12 },
+      { header: '已评分人数', key: 'scoredParticipantCount', width: 14 },
+      ...template.dimensions.map((dimension) => ({
+        header: `${dimension.name}平均分`,
+        key: `dimension_${dimension.id}`,
+        width: 16,
+      })),
+      { header: '总平均分', key: 'totalAverage', width: 14 },
+    ];
+    departmentSheet.getRow(1).font = { bold: true };
+    const departmentRows = buildDepartmentSummaryRows(
+      resultRows,
+      template.dimensions.map((dimension) => dimension.id),
+    );
+    for (const department of departmentRows) {
+      const values: Record<string, unknown> = {
+        level: department.level,
+        name: department.name,
+        path: department.path,
+        participantCount: department.participantCount,
+        scoredParticipantCount: department.scoredParticipantCount,
+        totalAverage:
+          department.totalAverage === null
+            ? ''
+            : Number(department.totalAverage.toFixed(2)),
+      };
+      for (const dimension of template.dimensions) {
+        const average = department.dimensionAverages[dimension.id];
+        values[`dimension_${dimension.id}`] =
+          average === null ? '' : Number(average.toFixed(2));
+      }
+      departmentSheet.addRow(values);
+    }
+    for (
+      let columnIndex = 6;
+      columnIndex <= departmentSheet.columnCount;
+      columnIndex += 1
+    )
+      departmentSheet.getColumn(columnIndex).numFmt = '0.00';
 
     const questionSheet = workbook.addWorksheet('逐题得分');
     questionSheet.columns = [

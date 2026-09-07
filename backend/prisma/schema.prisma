@@ -37,19 +37,64 @@ model AdminUser {
 
 model Contact {
   id         Int      @id @default(autoincrement()) @db.UnsignedInt
-  name       String   @unique @db.VarChar(100)
+  name       String   @db.VarChar(100)
   department String?  @db.VarChar(200)
   jobNo      String?  @map("job_no") @db.VarChar(50)
   position   String?  @db.VarChar(100)
   phone      String   @db.VarChar(20)
   email      String?  @db.VarChar(100)
   tags       String?  @db.VarChar(255)
+  isActive   Boolean  @default(true) @map("is_active")
   createdAt  DateTime @default(now()) @map("created_at")
   updatedAt  DateTime @updatedAt @map("updated_at")
 
   whitelistMembers WhitelistMember[]
+  memberships      ContactDepartmentMembership[]
 
+  @@index([phone], map: "idx_contacts_phone")
+  @@index([jobNo], map: "idx_contacts_job_no")
+  @@index([isActive], map: "idx_contacts_active")
   @@map("contacts")
+}
+
+model OrgDepartment {
+  id        Int      @id @default(autoincrement()) @db.UnsignedInt
+  code      String   @unique @db.VarChar(64)
+  name      String   @db.VarChar(200)
+  parentId  Int?     @map("parent_id") @db.UnsignedInt
+  sortOrder Int      @default(0) @map("sort_order")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  parent             OrgDepartment?                 @relation("DepartmentTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children           OrgDepartment[]                @relation("DepartmentTree")
+  memberships        ContactDepartmentMembership[]
+  evalGroupSnapshots EvalParticipantGroupSnapshot[]
+
+  @@unique([parentId, name], map: "uk_org_department_parent_name")
+  @@index([parentId, sortOrder], map: "idx_org_department_parent_sort")
+  @@index([isActive], map: "idx_org_department_active")
+  @@map("org_departments")
+}
+
+model ContactDepartmentMembership {
+  id                 Int      @id @default(autoincrement()) @db.UnsignedInt
+  contactId          Int      @map("contact_id") @db.UnsignedInt
+  departmentId       Int      @map("department_id") @db.UnsignedInt
+  isPrimary          Boolean  @default(false) @map("is_primary")
+  defaultEvalEnabled Boolean  @default(false) @map("default_eval_enabled")
+  roleName           String?  @map("role_name") @db.VarChar(100)
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  contact    Contact       @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  department OrgDepartment @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+
+  @@unique([contactId, departmentId], map: "uk_contact_department")
+  @@index([departmentId, isPrimary], map: "idx_membership_department_primary")
+  @@index([contactId, isPrimary], map: "idx_membership_contact_primary")
+  @@map("contact_department_memberships")
 }
 
 model WecomUser {
@@ -230,11 +275,34 @@ model EvalCycleParticipant {
   createdAt          DateTime @default(now()) @map("created_at")
   updatedAt          DateTime @updatedAt @map("updated_at")
 
-  cycle EvalCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  cycle          EvalCycle                      @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  groupSnapshots EvalParticipantGroupSnapshot[]
 
   @@unique([cycleId, contactId], map: "uk_eval_participant")
   @@index([cycleId, groupKey], map: "idx_eval_participant_group")
   @@map("eval_cycle_participants")
+}
+
+model EvalParticipantGroupSnapshot {
+  id                     Int      @id @default(autoincrement()) @db.UnsignedInt
+  participantId          Int      @map("participant_id") @db.UnsignedInt
+  departmentId           Int      @map("department_id") @db.UnsignedInt
+  departmentCodeSnapshot String   @map("department_code_snapshot") @db.VarChar(64)
+  departmentNameSnapshot String   @map("department_name_snapshot") @db.VarChar(200)
+  departmentPathSnapshot String   @map("department_path_snapshot") @db.VarChar(1000)
+  isPrimarySnapshot      Boolean  @default(false) @map("is_primary_snapshot")
+  evalEnabled            Boolean  @default(false) @map("eval_enabled")
+  roleNameSnapshot       String?  @map("role_name_snapshot") @db.VarChar(100)
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  participant EvalCycleParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  department  OrgDepartment        @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+
+  @@unique([participantId, departmentId], map: "uk_eval_participant_department")
+  @@index([departmentId, evalEnabled], map: "idx_eval_group_department_enabled")
+  @@index([participantId, evalEnabled], map: "idx_eval_group_participant_enabled")
+  @@map("eval_participant_group_snapshots")
 }
 
 model EvalEmployeeResult {

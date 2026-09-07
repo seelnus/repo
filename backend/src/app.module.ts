@@ -10,6 +10,8 @@ import { EvalService } from './eval.service';
 import { AdminAuthGuard } from './admin-auth.guard';
 import { FillAuthGuard } from './fill-auth.guard';
 import { PrismaService } from './prisma.service';
+import { OrganizationService } from './organization.service';
+import { OrganizationWorkbookService } from './organization-workbook.service';
 
 @Module({
   imports: [
@@ -21,6 +23,14 @@ import { PrismaService } from './prisma.service';
     }),
   ],
   controllers: [AppController, EvalController, EvalFillController, EvalDevController],
-  providers: [AppService, EvalService, PrismaService, AdminAuthGuard, FillAuthGuard],
+  providers: [
+    AppService,
+    EvalService,
+    OrganizationService,
+    OrganizationWorkbookService,
+    PrismaService,
+    AdminAuthGuard,
+    FillAuthGuard,
+  ],
 })
 export class AppModule {}

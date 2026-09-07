@@ -70,6 +70,14 @@ export class EvalController {
     return this.evalService.listParticipants(id);
   }
 
+  @Post('cycles/:id/participants/preview')
+  previewParticipants(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: any,
+  ) {
+    return this.evalService.previewParticipants(id, body);
+  }
+
   @Put('cycles/:id/participants')
   replaceParticipants(
     @Req() req: any,
@@ -96,6 +104,21 @@ export class EvalController {
     @Body() body: any,
   ) {
     return this.evalService.updateParticipant(
+      id,
+      participantId,
+      body,
+      req.admin.sub,
+    );
+  }
+
+  @Put('cycles/:id/participants/:participantId/groups')
+  updateParticipantGroups(
+    @Req() req: any,
+    @Param('id', ParseIntPipe) id: number,
+    @Param('participantId', ParseIntPipe) participantId: number,
+    @Body() body: any,
+  ) {
+    return this.evalService.updateParticipantGroups(
       id,
       participantId,
       body,
@@ -176,6 +199,14 @@ export class EvalController {
   @Get('cycles/:id/results')
   results(@Param('id', ParseIntPipe) id: number) {
     return this.evalService.listResults(id);
+  }
+
+  @Get('cycles/:id/progress/:contactId')
+  progress(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('contactId', ParseIntPipe) contactId: number,
+  ) {
+    return this.evalService.getRaterProgress(id, contactId);
   }
 
   @Get('cycles/:id/results/:contactId')
