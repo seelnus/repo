@@ -1942,6 +1942,39 @@ textarea.auto-resize:focus {
   margin-bottom: 20px;
 }
 
+.eval-template-instructions-editor {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 20px;
+  padding: 16px;
+  border: 1px solid #e9e4ff;
+  border-radius: 12px;
+  background: #faf9ff;
+}
+
+.eval-fill-instructions {
+  margin-bottom: 22px;
+  padding: 16px 18px;
+  border-left: 4px solid #7c3aed;
+  border-radius: 10px;
+  background: #f7f4ff;
+}
+
+.eval-fill-instructions-title {
+  margin-bottom: 6px;
+  color: #3f2a72;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.eval-fill-instructions-content {
+  color: #574d6b;
+  font-size: 14px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .eval-fill-score-question-block {
   padding: 22px;
   border: 1px solid #e8e8e8;

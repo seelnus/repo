@@ -166,6 +166,7 @@ type EvalQuestion = EvalScoreQuestion | EvalTextQuestion;
 interface EvalTemplate {
   version: 2;
   kind: "evaluation";
+  instructions?: string;
   dimensions: Array<{ id: string; name: string; order: number }>;
   questions: EvalQuestion[];
 }
@@ -724,6 +725,7 @@ function createDefaultTemplate(): EvalTemplate {
   return {
     version: 2,
     kind: "evaluation",
+    instructions: "",
     dimensions: [{ id: dimensionId, name: "价值观", order: 1 }],
     questions: [
       {
@@ -950,6 +952,23 @@ function EvalTemplateTab({
               className="eval-template-title"
               onChange={(event) => setTitle(event.target.value)}
             />
+            <div className="eval-template-instructions-editor">
+              <Typography.Text strong>填写说明（选填）</Typography.Text>
+              <Input.TextArea
+                rows={4}
+                showCount
+                maxLength={2000}
+                value={schema.instructions || ""}
+                disabled={readonly}
+                placeholder="请输入本次环评的填写规范、评价口径或注意事项"
+                onChange={(event) =>
+                  setSchema((current) => ({
+                    ...current,
+                    instructions: event.target.value,
+                  }))
+                }
+              />
+            </div>
             {schema.questions.map((question, index) => (
               <Card
                 key={question.id}
@@ -3681,6 +3700,9 @@ function FillTaskView({
     );
   }
   const questions: any[] = task.survey?.schemaJson?.questions || [];
+  const instructions = String(
+    task.survey?.schemaJson?.instructions || "",
+  ).trim();
   const dimensions: Array<{ id: string; name: string }> =
     task.survey?.schemaJson?.dimensions || [];
   const dimensionNames = new Map<string, string>(
@@ -3761,6 +3783,14 @@ function FillTaskView({
           </Space>
         }
       >
+        {instructions && (
+          <div className="eval-fill-instructions">
+            <div className="eval-fill-instructions-title">填写说明</div>
+            <div className="eval-fill-instructions-content">
+              {instructions}
+            </div>
+          </div>
+        )}
         {questions.length === 0 && <Empty description="这份问卷还没有题目" />}
         {questions.map((q, questionIndex) => (
           <div

@@ -49,6 +49,7 @@ export type EvalQuestion = EvalScoreQuestion | EvalTextQuestion;
 export type EvalTemplate = {
   version: 2;
   kind: 'evaluation';
+  instructions?: string;
   dimensions: EvalDimension[];
   questions: EvalQuestion[];
 };
@@ -76,8 +77,17 @@ export function isEvalTemplate(value: unknown): value is EvalTemplate {
 
 export function normalizeEvalTemplate(value: unknown): EvalTemplate {
   if (!isEvalTemplate(value)) {
-    return { version: 2, kind: 'evaluation', dimensions: [], questions: [] };
+    return {
+      version: 2,
+      kind: 'evaluation',
+      instructions: '',
+      dimensions: [],
+      questions: [],
+    };
   }
+  const instructions =
+    typeof value.instructions === 'string' ? value.instructions.trim() : '';
+  if (instructions.length > 2000) throw new Error('填写说明不能超过 2000 字');
   const dimensions = value.dimensions
     .map((dimension, index) => ({
       id: String(dimension.id || `dimension-${index + 1}`),
@@ -137,5 +147,11 @@ export function normalizeEvalTemplate(value: unknown): EvalTemplate {
     )
       throw new Error(`题目“${question.label}”必须填写完整的 0–5 分行为描述`);
   }
-  return { version: 2, kind: 'evaluation', dimensions, questions };
+  return {
+    version: 2,
+    kind: 'evaluation',
+    instructions,
+    dimensions,
+    questions,
+  };
 }
