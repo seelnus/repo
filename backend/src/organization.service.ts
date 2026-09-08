@@ -537,45 +537,51 @@ export class OrganizationService implements OnModuleInit {
       );
     }
 
-    await this.prisma.$transaction(async (tx) => {
-      for (const row of normalizedRows) {
-        const departments: DepartmentRow[] = [];
-        for (const parts of row.departmentPaths) {
-          departments.push(await this.ensureDepartmentPath(tx, parts));
-        }
-        const primaryDepartment = departments[0] || null;
-        const primaryDepartmentPath = primaryDepartment
-          ? await this.departmentPath(tx, primaryDepartment.id)
-          : null;
-        const contact = row.contactId
-          ? await tx.contact.update({
-              where: { id: row.contactId },
-              data: {
-                ...row.data,
-                department: primaryDepartmentPath,
-              },
-            })
-          : await tx.contact.create({
-              data: {
-                ...row.data,
-                department: primaryDepartmentPath,
-              },
-            });
-        await tx.contactDepartmentMembership.deleteMany({
-          where: { contactId: contact.id },
-        });
-        if (departments.length) {
-          await tx.contactDepartmentMembership.createMany({
-            data: departments.map((department, index) => ({
-              contactId: contact.id,
-              departmentId: department.id,
-              isPrimary: index === 0,
-              defaultEvalEnabled: true,
-            })),
+    await this.prisma.$transaction(
+      async (tx) => {
+        const departmentCache = new Map<string, DepartmentRow>();
+        for (const row of normalizedRows) {
+          const departments: DepartmentRow[] = [];
+          for (const parts of row.departmentPaths) {
+            departments.push(
+              await this.ensureDepartmentPath(tx, parts, departmentCache),
+            );
+          }
+          const primaryDepartment = departments[0] || null;
+          const primaryDepartmentPath = primaryDepartment
+            ? row.departmentPaths[0].join('/')
+            : null;
+          const contact = row.contactId
+            ? await tx.contact.update({
+                where: { id: row.contactId },
+                data: {
+                  ...row.data,
+                  department: primaryDepartmentPath,
+                },
+              })
+            : await tx.contact.create({
+                data: {
+                  ...row.data,
+                  department: primaryDepartmentPath,
+                },
+              });
+          await tx.contactDepartmentMembership.deleteMany({
+            where: { contactId: contact.id },
           });
+          if (departments.length) {
+            await tx.contactDepartmentMembership.createMany({
+              data: departments.map((department, index) => ({
+                contactId: contact.id,
+                departmentId: department.id,
+                isPrimary: index === 0,
+                defaultEvalEnabled: true,
+              })),
+            });
+          }
         }
-      }
-    });
+      },
+      { maxWait: 10_000, timeout: 120_000 },
+    );
     return { summary, rows: preview };
   }
 
@@ -727,12 +733,21 @@ export class OrganizationService implements OnModuleInit {
   private async ensureDepartmentPath(
     tx: Prisma.TransactionClient,
     parts: string[],
+    cache?: Map<string, DepartmentRow>,
   ) {
     let parentId: number | null = null;
     let parentCode = 'ROOT';
     let current: DepartmentRow | null = null;
     for (let index = 0; index < parts.length; index += 1) {
       const name = parts[index];
+      const path = parts.slice(0, index + 1).join('/');
+      const cached = cache?.get(path);
+      if (cached) {
+        current = cached;
+        parentId = current.id;
+        parentCode = current.code;
+        continue;
+      }
       current = await tx.orgDepartment.findFirst({
         where: { parentId, name },
       });
@@ -744,6 +759,7 @@ export class OrganizationService implements OnModuleInit {
           update: {},
         });
       }
+      cache?.set(path, current);
       parentId = current.id;
       parentCode = current.code;
     }

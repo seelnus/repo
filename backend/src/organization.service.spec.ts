@@ -150,6 +150,8 @@ describe('contact CSV multi-department import', () => {
     };
     return {
       service: new OrganizationService(prisma as any),
+      prisma,
+      tx,
       departments,
       contactUpdate,
       membershipDeleteMany,
@@ -179,6 +181,7 @@ describe('contact CSV multi-department import', () => {
   it('replaces all memberships and enables evaluation for every imported department', async () => {
     const {
       service,
+      prisma,
       departments,
       contactUpdate,
       membershipDeleteMany,
@@ -214,6 +217,27 @@ describe('contact CSV multi-department import', () => {
             ?.name,
       ),
     ).toEqual(['部门负责人及大组长互评', '杭州投放', '品宣部']);
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+      maxWait: 10_000,
+      timeout: 120_000,
+    });
+  });
+
+  it('reuses resolved department paths within the same import transaction', async () => {
+    const { service, tx } = createImportHarness();
+    await service.importContacts(
+      [
+        multiDepartmentRow,
+        {
+          ...multiDepartmentRow,
+          姓名: '第二位员工',
+          手机号: '13800000002',
+        },
+      ],
+      false,
+    );
+
+    expect(tx.orgDepartment.findFirst).toHaveBeenCalledTimes(5);
   });
 
   it('marks duplicate department paths as invalid', async () => {
