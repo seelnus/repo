@@ -1975,6 +1975,70 @@ textarea.auto-resize:focus {
   overflow-wrap: anywhere;
 }
 
+.eval-fill-task-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.eval-personal-results-loading {
+  display: flex;
+  justify-content: center;
+  padding: 48px 0;
+}
+
+.eval-personal-result-card {
+  margin-bottom: 16px;
+}
+
+.eval-personal-result-card-meta {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.5fr) 1fr 1fr auto;
+  align-items: end;
+  gap: 18px;
+}
+
+.eval-personal-result-card-meta > div {
+  display: grid;
+  gap: 4px;
+}
+
+.eval-personal-result-card-meta strong {
+  font-size: 16px;
+}
+
+.eval-personal-result-page {
+  width: min(920px, calc(100% - 32px));
+  margin: 24px auto 48px;
+}
+
+.eval-personal-result-page.is-loading {
+  display: flex;
+  justify-content: center;
+  padding-top: 80px;
+}
+
+.eval-personal-result-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.eval-personal-result-summary {
+  margin-top: 20px;
+}
+
+.eval-personal-result-privacy {
+  margin: 18px 0 24px;
+}
+
+.eval-personal-result-section {
+  margin-top: 24px !important;
+}
+
 .eval-fill-score-question-block {
   padding: 22px;
   border: 1px solid #e8e8e8;
@@ -2649,6 +2713,24 @@ textarea.auto-resize:focus {
 @media (max-width: 480px) {
   textarea.auto-resize {
     font-size: 16px;
+  }
+
+  .eval-fill-task-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .eval-personal-result-card-meta {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .eval-personal-result-card-meta > div:first-child,
+  .eval-personal-result-card-meta > .ant-btn {
+    grid-column: 1 / -1;
+  }
+
+  .eval-personal-result-card-meta > .ant-btn {
+    width: 100%;
   }
 
   .eval-score-question-editor .ant-card-head {

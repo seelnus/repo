@@ -3474,8 +3474,50 @@ function RelationsTab({
 }
 
 // ============ 填写端（员工）============
+interface ArchivedResultListItem {
+  cycleId: number;
+  cycleName: string;
+  archivedAt: string;
+  resultAvailable: boolean;
+  totalScore: number | null;
+  receivedCount: number;
+  expectedCount: number;
+}
+
+interface ArchivedPersonalResult {
+  cycle: {
+    id: number;
+    name: string;
+    status: "archived";
+    archivedAt: string;
+  };
+  participant: {
+    contactId: number;
+    name: string;
+  };
+  result: {
+    totalScore: number | null;
+    receivedCount: number;
+    expectedCount: number;
+    dimensionScores: Array<{
+      dimensionId: string;
+      name: string;
+      score: number | null;
+    }>;
+    questionScores: Array<{
+      questionId: string;
+      label: string;
+      selfScore: number | null;
+      otherScore: number | null;
+      score: number | null;
+      answerCount: number;
+    }>;
+  };
+}
+
 export function EvalFillPage() {
   const { message } = AntApp.useApp();
+  const navigate = useNavigate();
   const [token, setToken] = useState(localStorage.getItem("fill_token") || "");
   const [contacts, setContacts] = useState<ContactLite[]>([]);
   const [picked, setPicked] = useState<number | undefined>();
@@ -3483,6 +3525,17 @@ export function EvalFillPage() {
   const [groups, setGroups] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [active, setActive] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<"tasks" | "results">(() =>
+    new URLSearchParams(location.search).get("tab") === "results"
+      ? "results"
+      : "tasks",
+  );
+  const [archivedResults, setArchivedResults] = useState<
+    ArchivedResultListItem[]
+  >([]);
+  const [archivedLoading, setArchivedLoading] = useState(false);
+  const [archivedLoaded, setArchivedLoaded] = useState(false);
+  const [archivedError, setArchivedError] = useState("");
 
   // 企业微信登录回调：URL 里带 fill_token 就存下来并清理地址栏
   useEffect(() => {
@@ -3526,6 +3579,33 @@ export function EvalFillPage() {
     if (token) loadTasks();
   }, [token]);
 
+  async function loadArchivedResults() {
+    setArchivedLoading(true);
+    setArchivedError("");
+    try {
+      const { data } = await fillHttp.get("/eval/archived-results");
+      setArchivedResults(data || []);
+      setArchivedLoaded(true);
+    } catch (e: any) {
+      if (e.response?.status === 401) {
+        localStorage.removeItem("fill_token");
+        setToken("");
+        return;
+      }
+      setArchivedError(
+        e.response?.data?.message || "个人环评结果加载失败，请稍后重试",
+      );
+    } finally {
+      setArchivedLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (token && activeTab === "results" && !archivedLoaded) {
+      loadArchivedResults();
+    }
+  }, [token, activeTab, archivedLoaded]);
+
   async function devLogin() {
     if (!picked) {
       message.warning("请选择一个员工身份");
@@ -3546,6 +3626,8 @@ export function EvalFillPage() {
     localStorage.removeItem("fill_token");
     setToken("");
     setGroups([]);
+    setArchivedResults([]);
+    setArchivedLoaded(false);
   }
 
   if (active !== null) {
@@ -3610,52 +3692,264 @@ export function EvalFillPage() {
         }}
       >
         <Typography.Title level={4} style={{ margin: 0 }}>
-          待我填写
+          360 环评
         </Typography.Title>
         <Button onClick={logout}>切换身份</Button>
       </div>
-      {loading ? (
-        <Spin />
-      ) : groups.length === 0 ? (
-        <Empty description="暂无待填写任务（确认批次已发布、且有分配给你的关系）" />
-      ) : (
-        groups.map((g) => (
-          <Card
-            key={g.cycleId}
-            title={g.cycleName}
-            style={{ marginBottom: 16 }}
-          >
-            {g.tasks.map((t: any) => (
-              <div
-                key={t.relationId}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  padding: "10px 0",
-                  borderBottom: "1px solid #f0f0f0",
-                }}
-              >
-                <span>
-                  <Tag>{TYPE_LABEL[t.type] || t.type}</Tag> {t.rateeName} ·{" "}
-                  {t.surveyTitle}
-                </span>
-                {t.done ? (
-                  <Tag color="green">已完成</Tag>
-                ) : (
-                  <Button
-                    type="primary"
-                    size="small"
-                    onClick={() => setActive(t.relationId)}
-                  >
-                    去填写
-                  </Button>
-                )}
+      <Tabs
+        activeKey={activeTab}
+        onChange={(key) => {
+          const next = key === "results" ? "results" : "tasks";
+          setActiveTab(next);
+          navigate(
+            next === "results" ? "/eval-fill?tab=results" : "/eval-fill",
+            { replace: true },
+          );
+        }}
+        items={[
+          {
+            key: "tasks",
+            label: "待我填写",
+            children: loading ? (
+              <Spin />
+            ) : groups.length === 0 ? (
+              <Empty description="暂无待填写任务（确认批次已发布、且有分配给你的关系）" />
+            ) : (
+              groups.map((g) => (
+                <Card
+                  key={g.cycleId}
+                  title={g.cycleName}
+                  style={{ marginBottom: 16 }}
+                >
+                  {g.tasks.map((t: any) => (
+                    <div key={t.relationId} className="eval-fill-task-row">
+                      <span>
+                        <Tag>{TYPE_LABEL[t.type] || t.type}</Tag> {t.rateeName} ·{" "}
+                        {t.surveyTitle}
+                      </span>
+                      {t.done ? (
+                        <Tag color="green">已完成</Tag>
+                      ) : (
+                        <Button
+                          type="primary"
+                          size="small"
+                          onClick={() => setActive(t.relationId)}
+                        >
+                          去填写
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </Card>
+              ))
+            ),
+          },
+          {
+            key: "results",
+            label: archivedLoaded
+              ? `我的结果 ${archivedResults.length}`
+              : "我的结果",
+            children: archivedLoading ? (
+              <div className="eval-personal-results-loading">
+                <Spin />
               </div>
-            ))}
+            ) : archivedError ? (
+              <Result
+                status="warning"
+                title="个人环评结果加载失败"
+                subTitle={archivedError}
+                extra={
+                  <Button type="primary" onClick={loadArchivedResults}>
+                    重新加载
+                  </Button>
+                }
+              />
+            ) : archivedResults.length === 0 ? (
+              <Empty description="暂无可查看的个人环评结果" />
+            ) : (
+              archivedResults.map((item) => (
+                <Card
+                  key={item.cycleId}
+                  className="eval-personal-result-card"
+                  title={item.cycleName}
+                  extra={<Tag>已归档</Tag>}
+                >
+                  <div className="eval-personal-result-card-meta">
+                    <div>
+                      <Typography.Text type="secondary">
+                        归档时间
+                      </Typography.Text>
+                      <strong>
+                        {item.archivedAt
+                          ? dayjs(item.archivedAt).format("YYYY-MM-DD HH:mm")
+                          : "—"}
+                      </strong>
+                    </div>
+                    <div>
+                      <Typography.Text type="secondary">
+                        最终总分
+                      </Typography.Text>
+                      <strong>
+                        {item.totalScore === null
+                          ? "—"
+                          : Number(item.totalScore).toFixed(2)}
+                      </strong>
+                    </div>
+                    <div>
+                      <Typography.Text type="secondary">
+                        已收/应收
+                      </Typography.Text>
+                      <strong>
+                        {item.receivedCount}/{item.expectedCount}
+                      </strong>
+                    </div>
+                    <Button
+                      type="primary"
+                      disabled={!item.resultAvailable}
+                      onClick={() =>
+                        navigate(`/eval-fill/results/${item.cycleId}`)
+                      }
+                    >
+                      {item.resultAvailable ? "查看个人结果" : "暂无结果"}
+                    </Button>
+                  </div>
+                </Card>
+              ))
+            ),
+          },
+        ]}
+      />
+    </div>
+  );
+}
+
+export function EvalPersonalResultPage() {
+  const { cycleId } = useParams();
+  const navigate = useNavigate();
+  const [report, setReport] = useState<ArchivedPersonalResult | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!localStorage.getItem("fill_token")) {
+      navigate("/eval-fill", { replace: true });
+      return;
+    }
+    setLoading(true);
+    setError("");
+    fillHttp
+      .get(`/eval/archived-results/${cycleId}`)
+      .then(({ data }) => setReport(data))
+      .catch((e: any) => {
+        if (e.response?.status === 401) {
+          localStorage.removeItem("fill_token");
+          navigate("/eval-fill", { replace: true });
+          return;
+        }
+        setError(
+          e.response?.data?.message || "个人环评结果不存在或暂不可查看",
+        );
+      })
+      .finally(() => setLoading(false));
+  }, [cycleId, navigate]);
+
+  if (loading) {
+    return (
+      <div className="eval-personal-result-page is-loading">
+        <Spin />
+      </div>
+    );
+  }
+
+  if (error || !report) {
+    return (
+      <div className="eval-personal-result-page">
+        <Result
+          status="warning"
+          title={error || "个人环评结果不存在或暂不可查看"}
+          extra={
+            <Button onClick={() => navigate("/eval-fill?tab=results")}>
+              返回我的结果
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="eval-personal-result-page">
+      <div className="eval-personal-result-header">
+        <Button type="link" onClick={() => navigate("/eval-fill?tab=results")}>
+          ← 返回我的结果
+        </Button>
+        <Tag>已归档</Tag>
+      </div>
+      <Typography.Title level={3}>{report.cycle.name}</Typography.Title>
+      <Typography.Text type="secondary">
+        {report.participant.name} · 归档时间{" "}
+        {dayjs(report.cycle.archivedAt).format("YYYY-MM-DD HH:mm")}
+      </Typography.Text>
+
+      <Row gutter={[16, 16]} className="eval-personal-result-summary">
+        <Col xs={24} sm={12}>
+          <Card>
+            <Statistic
+              title="最终总分"
+              value={
+                report.result.totalScore === null
+                  ? "—"
+                  : Number(report.result.totalScore).toFixed(2)
+              }
+            />
           </Card>
-        ))
-      )}
+        </Col>
+        <Col xs={24} sm={12}>
+          <Card>
+            <Statistic
+              title="已收/应收"
+              value={`${report.result.receivedCount}/${report.result.expectedCount}`}
+            />
+          </Card>
+        </Col>
+      </Row>
+
+      <Alert
+        type="info"
+        showIcon
+        className="eval-personal-result-privacy"
+        message="结果仅展示汇总评分，不展示评价人身份及文字反馈"
+      />
+
+      <Typography.Title level={5}>维度得分</Typography.Title>
+      <Table
+        size="small"
+        pagination={false}
+        rowKey="dimensionId"
+        dataSource={report.result.dimensionScores}
+        columns={[
+          { title: "维度", dataIndex: "name" },
+          { title: "得分", dataIndex: "score", render: scoreText },
+        ]}
+      />
+
+      <Typography.Title level={5} className="eval-personal-result-section">
+        逐题得分
+      </Typography.Title>
+      <Table
+        size="small"
+        pagination={false}
+        rowKey="questionId"
+        dataSource={report.result.questionScores}
+        scroll={{ x: 720 }}
+        columns={[
+          { title: "题目", dataIndex: "label", width: 220 },
+          { title: "自评", dataIndex: "selfScore", render: scoreText },
+          { title: "他评平均", dataIndex: "otherScore", render: scoreText },
+          { title: "综合", dataIndex: "score", render: scoreText },
+          { title: "有效答案", dataIndex: "answerCount" },
+        ]}
+      />
     </div>
   );
 }

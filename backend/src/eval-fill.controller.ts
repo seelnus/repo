@@ -22,6 +22,19 @@ export class EvalFillController {
     return this.evalService.listMyTasks(req.fillUser);
   }
 
+  @Get('archived-results')
+  archivedResults(@Req() req: any) {
+    return this.evalService.listMyArchivedResults(req.fillUser);
+  }
+
+  @Get('archived-results/:cycleId')
+  archivedResult(
+    @Param('cycleId', ParseIntPipe) cycleId: number,
+    @Req() req: any,
+  ) {
+    return this.evalService.getMyArchivedResult(cycleId, req.fillUser);
+  }
+
   @Get('tasks/:relationId')
   getTask(
     @Param('relationId', ParseIntPipe) relationId: number,

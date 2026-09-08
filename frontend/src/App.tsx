@@ -72,7 +72,7 @@ import Papa from 'papaparse';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, ClipboardEvent, ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
-import { EvalCycleList, EvalCycleDetail, EvalFillPage } from './EvalPages';
+import { EvalCycleList, EvalCycleDetail, EvalFillPage, EvalPersonalResultPage } from './EvalPages';
 import { OrganizationContactsPage } from './OrganizationContactsPage';
 
 const API = '/api';
@@ -227,6 +227,7 @@ function App() {
             <Route path="/s/:shareToken" element={<FillPage />} />
             <Route path="/my" element={<MySurveysPage />} />
             <Route path="/eval-fill" element={<EvalFillPage />} />
+            <Route path="/eval-fill/results/:cycleId" element={<EvalPersonalResultPage />} />
             <Route path="/success" element={<Result status="success" title="提交成功" />} />
             <Route path="/*" element={<AdminShell />} />
           </Routes>

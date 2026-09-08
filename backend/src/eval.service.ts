@@ -34,6 +34,8 @@ export interface EvalFillUser {
   type: 'fill';
 }
 
+const PERSONAL_RESULT_UNAVAILABLE = '个人环评结果不存在或暂不可查看';
+
 // 领导识别：联系人 tags 含"领导"二字即视为领导（按人绑定，全局标记）
 export const LEADER_TAG = '领导';
 export function isLeaderTag(tags: string | null | undefined): boolean {
@@ -2321,6 +2323,145 @@ export class EvalService {
       });
     }
     return Array.from(byCycle.values());
+  }
+
+  async listMyArchivedResults(fillUser: EvalFillUser) {
+    const participants = await this.prisma.evalCycleParticipant.findMany({
+      where: {
+        contactId: fillUser.sub,
+        cycle: { status: 'archived' },
+      },
+      include: {
+        cycle: {
+          select: {
+            id: true,
+            name: true,
+            archivedAt: true,
+          },
+        },
+      },
+      orderBy: { cycle: { archivedAt: 'desc' } },
+    });
+    const cycleIds = participants.map((participant) => participant.cycleId);
+    const results = cycleIds.length
+      ? await this.prisma.evalEmployeeResult.findMany({
+          where: {
+            cycleId: { in: cycleIds },
+            rateeContactId: fillUser.sub,
+          },
+          select: {
+            cycleId: true,
+            totalScore: true,
+            receivedCount: true,
+            expectedCount: true,
+          },
+        })
+      : [];
+    const resultByCycle = new Map(
+      results.map((result) => [result.cycleId, result]),
+    );
+    return participants.map((participant) => {
+      const result = resultByCycle.get(participant.cycleId);
+      return {
+        cycleId: participant.cycle.id,
+        cycleName: participant.cycle.name,
+        archivedAt: participant.cycle.archivedAt,
+        resultAvailable: !!result,
+        totalScore: this.scoreNumber(result?.totalScore),
+        receivedCount: result?.receivedCount || 0,
+        expectedCount: result?.expectedCount || 0,
+      };
+    });
+  }
+
+  async getMyArchivedResult(cycleId: number, fillUser: EvalFillUser) {
+    const participant = await this.prisma.evalCycleParticipant.findFirst({
+      where: {
+        cycleId,
+        contactId: fillUser.sub,
+        cycle: { status: 'archived' },
+      },
+      include: {
+        cycle: {
+          select: {
+            id: true,
+            name: true,
+            status: true,
+            archivedAt: true,
+          },
+        },
+      },
+    });
+    if (!participant) throw new NotFoundException(PERSONAL_RESULT_UNAVAILABLE);
+
+    const result = await this.prisma.evalEmployeeResult.findUnique({
+      where: {
+        cycleId_rateeContactId: {
+          cycleId,
+          rateeContactId: fillUser.sub,
+        },
+      },
+      select: {
+        totalScore: true,
+        receivedCount: true,
+        expectedCount: true,
+        dimensionScoresJson: true,
+        questionScoresJson: true,
+      },
+    });
+    if (!result) throw new NotFoundException(PERSONAL_RESULT_UNAVAILABLE);
+
+    const dimensionScores = Array.isArray(result.dimensionScoresJson)
+      ? result.dimensionScoresJson.map((value) => {
+          const item = value as Record<string, unknown>;
+          return {
+            dimensionId: String(item.dimensionId || ''),
+            name: String(item.name || ''),
+            score: this.scoreNumber(item.score),
+          };
+        })
+      : [];
+    const questionScores = Array.isArray(result.questionScoresJson)
+      ? result.questionScoresJson.map((value) => {
+          const item = value as Record<string, unknown>;
+          return {
+            questionId: String(item.questionId || ''),
+            label: String(item.label || ''),
+            selfScore: this.scoreNumber(item.selfScore),
+            otherScore: this.scoreNumber(item.otherScore),
+            score: this.scoreNumber(item.score),
+            answerCount: Number.isFinite(Number(item.answerCount))
+              ? Number(item.answerCount)
+              : 0,
+          };
+        })
+      : [];
+
+    return {
+      cycle: {
+        id: participant.cycle.id,
+        name: participant.cycle.name,
+        status: 'archived' as const,
+        archivedAt: participant.cycle.archivedAt,
+      },
+      participant: {
+        contactId: participant.contactId,
+        name: participant.nameSnapshot,
+      },
+      result: {
+        totalScore: this.scoreNumber(result.totalScore),
+        receivedCount: result.receivedCount,
+        expectedCount: result.expectedCount,
+        dimensionScores,
+        questionScores,
+      },
+    };
+  }
+
+  private scoreNumber(value: unknown): number | null {
+    if (value === null || value === undefined || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
   }
 
   async getTask(relationId: number, fillUser: EvalFillUser) {
