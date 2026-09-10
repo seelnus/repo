@@ -2,16 +2,28 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import dayjs from "dayjs";
 import {
+  CheckCircleFilled,
+  ClockCircleOutlined,
+  DownOutlined,
+  FileDoneOutlined,
+  SafetyCertificateOutlined,
+  UserOutlined,
+} from "@ant-design/icons";
+import {
   App as AntApp,
   Alert,
+  Avatar,
+  Badge,
   Button,
   Card,
   Checkbox,
   Col,
+  Collapse,
   DatePicker,
   Descriptions,
   Divider,
   Drawer,
+  Dropdown,
   Empty,
   Form,
   Input,
@@ -24,6 +36,7 @@ import {
   Result,
   Row,
   Select,
+  Skeleton,
   Space,
   Spin,
   Statistic,
@@ -35,6 +48,15 @@ import {
   Typography,
 } from "antd";
 import { http, fillHttp, downloadFile } from "./App";
+import {
+  buildEvalFillTaskView,
+  getEvalDeadlineState,
+  getEvalFillDisplayName,
+} from "./eval-fill-view-model";
+import type {
+  EvalFillTaskGroup,
+  EvalFillTaskItem,
+} from "./eval-fill-view-model";
 
 // ── 类型（宽松定义，够用即可）──
 interface Cycle {
@@ -3515,6 +3537,120 @@ interface ArchivedPersonalResult {
   };
 }
 
+function evalTypeColor(type: string) {
+  if (type === "self") return "blue";
+  if (type === "leader") return "gold";
+  return "cyan";
+}
+
+function evalDeadlineText(endAt: string | null) {
+  const state = getEvalDeadlineState(endAt);
+  if (state === "none") return { state, text: "长期有效" };
+  if (state === "expired") return { state, text: "已截止" };
+  if (state === "urgent") {
+    const hours = Math.max(1, dayjs(endAt).diff(dayjs(), "hour"));
+    return {
+      state,
+      text: hours < 24 ? `剩余 ${hours} 小时` : `剩余 ${Math.ceil(hours / 24)} 天`,
+    };
+  }
+  return { state, text: `截止 ${dayjs(endAt).format("MM月DD日 HH:mm")}` };
+}
+
+function EvalPendingTaskCard({
+  task,
+  onOpen,
+}: {
+  task: EvalFillTaskItem;
+  onOpen: (relationId: number) => void;
+}) {
+  const deadline = evalDeadlineText(task.cycleEndAt);
+  return (
+    <Card
+      size="small"
+      className={`eval-fill-task-card ${deadline.state === "urgent" ? "is-urgent" : ""}`}
+    >
+      <div className="eval-fill-task-card-head">
+        <div className="eval-fill-task-card-tags">
+          <Tag color={evalTypeColor(task.type)}>
+            {TYPE_LABEL[task.type] || task.type}
+          </Tag>
+          {deadline.state === "urgent" && <Tag color="orange">即将截止</Tag>}
+        </div>
+        <span className={`eval-fill-deadline is-${deadline.state}`}>
+          <ClockCircleOutlined /> {deadline.text}
+        </span>
+      </div>
+      <Typography.Title level={5} className="eval-fill-task-name">
+        评价对象：{task.rateeName}
+      </Typography.Title>
+      <Typography.Text type="secondary" className="eval-fill-task-survey">
+        {task.cycleName} · {task.surveyTitle}
+      </Typography.Text>
+      <Button
+        type="primary"
+        size="large"
+        className="eval-fill-task-action"
+        onClick={() => onOpen(task.relationId)}
+      >
+        开始填写
+      </Button>
+    </Card>
+  );
+}
+
+function EvalArchivedResultCard({
+  item,
+  onOpen,
+}: {
+  item: ArchivedResultListItem;
+  onOpen: (cycleId: number) => void;
+}) {
+  const completion = item.expectedCount
+    ? Math.min(100, Math.round((item.receivedCount / item.expectedCount) * 100))
+    : 0;
+  return (
+    <Card size="small" className="eval-fill-result-card">
+      <div className="eval-fill-result-card-head">
+        <div>
+          <Tag color="green" icon={<CheckCircleFilled />}>
+            已归档
+          </Tag>
+          <Typography.Title level={5}>{item.cycleName}</Typography.Title>
+        </div>
+        <div className="eval-fill-result-score">
+          <strong>
+            {item.totalScore === null ? "—" : Number(item.totalScore).toFixed(2)}
+          </strong>
+          <span>最终总分</span>
+        </div>
+      </div>
+      <div className="eval-fill-result-meta">
+        <span>
+          归档于 {item.archivedAt ? dayjs(item.archivedAt).format("YYYY-MM-DD") : "—"}
+        </span>
+        <span>
+          评分收集 {item.receivedCount}/{item.expectedCount}
+        </span>
+      </div>
+      <Progress
+        percent={completion}
+        showInfo={false}
+        size="small"
+        strokeColor="#1677ff"
+      />
+      <Button
+        block
+        size="large"
+        disabled={!item.resultAvailable}
+        onClick={() => onOpen(item.cycleId)}
+      >
+        {item.resultAvailable ? "查看个人结果" : "暂无可查看结果"}
+      </Button>
+    </Card>
+  );
+}
+
 export function EvalFillPage() {
   const { message } = AntApp.useApp();
   const navigate = useNavigate();
@@ -3522,8 +3658,9 @@ export function EvalFillPage() {
   const [contacts, setContacts] = useState<ContactLite[]>([]);
   const [picked, setPicked] = useState<number | undefined>();
   const [devEnabled, setDevEnabled] = useState(true);
-  const [groups, setGroups] = useState<any[]>([]);
+  const [groups, setGroups] = useState<EvalFillTaskGroup[]>([]);
   const [loading, setLoading] = useState(false);
+  const [tasksError, setTasksError] = useState("");
   const [active, setActive] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<"tasks" | "results">(() =>
     new URLSearchParams(location.search).get("tab") === "results"
@@ -3536,6 +3673,8 @@ export function EvalFillPage() {
   const [archivedLoading, setArchivedLoading] = useState(false);
   const [archivedLoaded, setArchivedLoaded] = useState(false);
   const [archivedError, setArchivedError] = useState("");
+  const taskView = useMemo(() => buildEvalFillTaskView(groups), [groups]);
+  const displayName = useMemo(() => getEvalFillDisplayName(token), [token]);
 
   // 企业微信登录回调：URL 里带 fill_token 就存下来并清理地址栏
   useEffect(() => {
@@ -3563,6 +3702,7 @@ export function EvalFillPage() {
 
   async function loadTasks() {
     setLoading(true);
+    setTasksError("");
     try {
       const { data } = await fillHttp.get("/eval/tasks");
       setGroups(data || []);
@@ -3570,7 +3710,9 @@ export function EvalFillPage() {
       if (e.response?.status === 401) {
         localStorage.removeItem("fill_token");
         setToken("");
+        return;
       }
+      setTasksError(e.response?.data?.message || "填写任务加载失败，请稍后重试");
     } finally {
       setLoading(false);
     }
@@ -3626,6 +3768,7 @@ export function EvalFillPage() {
     localStorage.removeItem("fill_token");
     setToken("");
     setGroups([]);
+    setTasksError("");
     setArchivedResults([]);
     setArchivedLoaded(false);
   }
@@ -3682,21 +3825,38 @@ export function EvalFillPage() {
   }
 
   return (
-    <div style={{ maxWidth: 720, margin: "24px auto" }}>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 16,
-        }}
-      >
-        <Typography.Title level={4} style={{ margin: 0 }}>
-          360 环评
-        </Typography.Title>
-        <Button onClick={logout}>切换身份</Button>
-      </div>
+    <div className="eval-fill-list-page">
+      <header className="eval-fill-list-header">
+        <div className="eval-fill-brand">
+          <Avatar shape="square" size={40} icon={<FileDoneOutlined />} />
+          <div>
+            <Typography.Title level={4}>360 环评</Typography.Title>
+            <Typography.Text type="secondary">我的评价任务中心</Typography.Text>
+          </div>
+        </div>
+        <Dropdown
+          trigger={["click"]}
+          menu={{
+            items: [
+              {
+                key: "switch",
+                icon: <UserOutlined />,
+                label: "切换身份",
+                onClick: logout,
+              },
+            ],
+          }}
+        >
+          <Button className="eval-fill-user-button">
+            <Avatar size={24} icon={<UserOutlined />} />
+            <span>{displayName}</span>
+            <DownOutlined />
+          </Button>
+        </Dropdown>
+      </header>
+
       <Tabs
+        className="eval-fill-list-tabs"
         activeKey={activeTab}
         onChange={(key) => {
           const next = key === "results" ? "results" : "tasks";
@@ -3709,112 +3869,166 @@ export function EvalFillPage() {
         items={[
           {
             key: "tasks",
-            label: "待我填写",
-            children: loading ? (
-              <Spin />
-            ) : groups.length === 0 ? (
-              <Empty description="暂无待填写任务（确认批次已发布、且有分配给你的关系）" />
-            ) : (
-              groups.map((g) => (
-                <Card
-                  key={g.cycleId}
-                  title={g.cycleName}
-                  style={{ marginBottom: 16 }}
-                >
-                  {g.tasks.map((t: any) => (
-                    <div key={t.relationId} className="eval-fill-task-row">
-                      <span>
-                        <Tag>{TYPE_LABEL[t.type] || t.type}</Tag> {t.rateeName} ·{" "}
-                        {t.surveyTitle}
-                      </span>
-                      {t.done ? (
-                        <Tag color="green">已完成</Tag>
-                      ) : (
-                        <Button
-                          type="primary"
-                          size="small"
-                          onClick={() => setActive(t.relationId)}
-                        >
-                          去填写
-                        </Button>
-                      )}
-                    </div>
-                  ))}
-                </Card>
-              ))
+            label: (
+              <span className="eval-fill-tab-label">
+                待我填写
+                {!!taskView.pending.length && (
+                  <Badge count={taskView.pending.length} size="small" />
+                )}
+              </span>
             ),
-          },
-          {
-            key: "results",
-            label: archivedLoaded
-              ? `我的结果 ${archivedResults.length}`
-              : "我的结果",
-            children: archivedLoading ? (
-              <div className="eval-personal-results-loading">
-                <Spin />
+            children: loading ? (
+              <div className="eval-fill-card-list">
+                {[1, 2].map((item) => (
+                  <Card key={item} className="eval-fill-task-card">
+                    <Skeleton active paragraph={{ rows: 3 }} />
+                  </Card>
+                ))}
               </div>
-            ) : archivedError ? (
+            ) : tasksError ? (
               <Result
                 status="warning"
-                title="个人环评结果加载失败"
-                subTitle={archivedError}
+                title="填写任务加载失败"
+                subTitle={tasksError}
                 extra={
-                  <Button type="primary" onClick={loadArchivedResults}>
+                  <Button type="primary" onClick={loadTasks}>
                     重新加载
                   </Button>
                 }
               />
-            ) : archivedResults.length === 0 ? (
-              <Empty description="暂无可查看的个人环评结果" />
+            ) : taskView.total === 0 ? (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="当前没有分配给你的评价任务"
+              />
             ) : (
-              archivedResults.map((item) => (
-                <Card
-                  key={item.cycleId}
-                  className="eval-personal-result-card"
-                  title={item.cycleName}
-                  extra={<Tag>已归档</Tag>}
-                >
-                  <div className="eval-personal-result-card-meta">
-                    <div>
-                      <Typography.Text type="secondary">
-                        归档时间
-                      </Typography.Text>
-                      <strong>
-                        {item.archivedAt
-                          ? dayjs(item.archivedAt).format("YYYY-MM-DD HH:mm")
-                          : "—"}
-                      </strong>
-                    </div>
-                    <div>
-                      <Typography.Text type="secondary">
-                        最终总分
-                      </Typography.Text>
-                      <strong>
-                        {item.totalScore === null
-                          ? "—"
-                          : Number(item.totalScore).toFixed(2)}
-                      </strong>
-                    </div>
-                    <div>
-                      <Typography.Text type="secondary">
-                        已收/应收
-                      </Typography.Text>
-                      <strong>
-                        {item.receivedCount}/{item.expectedCount}
-                      </strong>
-                    </div>
-                    <Button
-                      type="primary"
-                      disabled={!item.resultAvailable}
-                      onClick={() =>
-                        navigate(`/eval-fill/results/${item.cycleId}`)
-                      }
-                    >
-                      {item.resultAvailable ? "查看个人结果" : "暂无结果"}
-                    </Button>
+              <div className="eval-fill-tasks-panel">
+                <section className="eval-fill-task-overview">
+                  <div className="eval-fill-overview-copy">
+                    <span>本轮待办</span>
+                    <strong>{taskView.pending.length} 份问卷</strong>
+                    <small>
+                      已完成 {taskView.completedCount}/{taskView.total}
+                      {taskView.nearestEndAt
+                        ? ` · 最近截止 ${dayjs(taskView.nearestEndAt).format("MM月DD日 HH:mm")}`
+                        : ""}
+                    </small>
                   </div>
-                </Card>
-              ))
+                  <Progress
+                    type="circle"
+                    size={68}
+                    percent={taskView.progressPercent}
+                    strokeColor="#1677ff"
+                  />
+                </section>
+
+                {taskView.pending.length ? (
+                  <div className="eval-fill-card-list">
+                    {taskView.pending.map((task) => (
+                      <EvalPendingTaskCard
+                        key={task.relationId}
+                        task={task}
+                        onOpen={setActive}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <Result
+                    status="success"
+                    title="本轮任务已全部完成"
+                    subTitle="感谢你的认真填写"
+                  />
+                )}
+
+                {!!taskView.completed.length && (
+                  <Collapse
+                    ghost
+                    className="eval-fill-completed-collapse"
+                    items={[
+                      {
+                        key: "completed",
+                        label: `已完成 ${taskView.completed.length} 份`,
+                        children: (
+                          <div className="eval-fill-completed-list">
+                            {taskView.completed.map((task) => (
+                              <div key={task.relationId}>
+                                <CheckCircleFilled />
+                                <span>
+                                  {task.rateeName} · {task.surveyTitle}
+                                </span>
+                                <Tag color="success">已完成</Tag>
+                              </div>
+                            ))}
+                          </div>
+                        ),
+                      },
+                    ]}
+                  />
+                )}
+              </div>
+            ),
+          },
+          {
+            key: "results",
+            label: (
+              <span className="eval-fill-tab-label">
+                我的结果
+                {archivedLoaded && archivedResults.length > 0 && (
+                  <Badge
+                    count={archivedResults.length}
+                    size="small"
+                    color="#8c8c8c"
+                  />
+                )}
+              </span>
+            ),
+            children: (
+              <div className="eval-fill-results-panel">
+                <Alert
+                  type="info"
+                  showIcon
+                  icon={<SafetyCertificateOutlined />}
+                  message="个人结果仅展示你的汇总评分"
+                  description="不展示其他评价人的身份和文字反馈"
+                />
+                {archivedLoading ? (
+                  <div className="eval-fill-card-list">
+                    {[1, 2].map((item) => (
+                      <Card key={item} className="eval-fill-result-card">
+                        <Skeleton active paragraph={{ rows: 3 }} />
+                      </Card>
+                    ))}
+                  </div>
+                ) : archivedError ? (
+                  <Result
+                    status="warning"
+                    title="个人环评结果加载失败"
+                    subTitle={archivedError}
+                    extra={
+                      <Button type="primary" onClick={loadArchivedResults}>
+                        重新加载
+                      </Button>
+                    }
+                  />
+                ) : archivedResults.length === 0 ? (
+                  <Empty
+                    image={Empty.PRESENTED_IMAGE_SIMPLE}
+                    description="暂无已归档的个人环评结果"
+                  />
+                ) : (
+                  <div className="eval-fill-card-list">
+                    {archivedResults.map((item) => (
+                      <EvalArchivedResultCard
+                        key={item.cycleId}
+                        item={item}
+                        onOpen={(cycleId) =>
+                          navigate(`/eval-fill/results/${cycleId}`)
+                        }
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
             ),
           },
         ]}

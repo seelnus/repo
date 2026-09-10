@@ -2306,6 +2306,7 @@ export class EvalService {
           cycleId: r.cycleId,
           cycleName: r.cycle.name,
           cycleStatus: r.cycle.status,
+          cycleEndAt: r.cycle.endAt,
           tasks: [],
         });
       }
