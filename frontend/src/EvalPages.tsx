@@ -166,6 +166,23 @@ interface ParticipantPreview {
   }>;
   warnings: string[];
 }
+interface PublishedParticipantAdditionPreview {
+  cycleId: number;
+  newParticipantCount: number;
+  selfRelationCount: number;
+  peerRelationCount: number;
+  affectedExistingRaterCount: number;
+  totalRelationCount: number;
+  deadlineAt: string;
+  participants: Array<{
+    contactId: number;
+    name: string;
+    department: string;
+  }>;
+  warnings: string[];
+  createdParticipantCount?: number;
+  createdRelationCount?: number;
+}
 interface EvalQuestionBase {
   id: string;
   label: string;
@@ -1362,7 +1379,11 @@ function EvalPeopleTab({ cycle }: { cycle: Cycle }) {
           key: "participants",
           label: "参评人员",
           children: (
-            <EvalParticipantsTab cycle={cycle} refreshKey={relationRevision} />
+            <EvalParticipantsTab
+              cycle={cycle}
+              refreshKey={relationRevision}
+              onParticipantsAdded={notifyRelationsChanged}
+            />
           ),
         },
         {
@@ -1398,9 +1419,11 @@ function EvalPeopleTab({ cycle }: { cycle: Cycle }) {
 function EvalParticipantsTab({
   cycle,
   refreshKey = 0,
+  onParticipantsAdded,
 }: {
   cycle: Cycle;
   refreshKey?: number;
+  onParticipantsAdded?: () => void;
 }) {
   const { message } = AntApp.useApp();
   const [contacts, setContacts] = useState<ContactLite[]>([]);
@@ -1419,7 +1442,17 @@ function EvalParticipantsTab({
   const [adjusting, setAdjusting] = useState<EvalParticipantLite | null>(null);
   const [groupDraft, setGroupDraft] = useState<Record<number, boolean>>({});
   const [groupSaving, setGroupSaving] = useState(false);
+  const [additionOpen, setAdditionOpen] = useState(false);
+  const [additionIds, setAdditionIds] = useState<number[]>([]);
+  const [additionPreview, setAdditionPreview] =
+    useState<PublishedParticipantAdditionPreview | null>(null);
+  const [additionPreviewLoading, setAdditionPreviewLoading] = useState(false);
+  const [additionSaving, setAdditionSaving] = useState(false);
   const readonly = cycle.status !== "draft";
+  const canAddPublishedParticipants =
+    cycle.status === "published" &&
+    !!cycle.endAt &&
+    dayjs(cycle.endAt).isAfter(dayjs());
 
   async function load() {
     const [candidateResponse, participantResponse] = await Promise.all([
@@ -1455,6 +1488,15 @@ function EvalParticipantsTab({
   );
   const relationsNeedRegeneration = participants.some(
     (participant) => participant.relationsNeedRegeneration,
+  );
+  const participantContactIds = useMemo(
+    () => new Set(participants.map((participant) => participant.contactId)),
+    [participants],
+  );
+  const additionCandidates = useMemo(
+    () =>
+      contacts.filter((contact) => !participantContactIds.has(contact.id)),
+    [contacts, participantContactIds],
   );
 
   function selectDepartments(values: number[]) {
@@ -1519,6 +1561,65 @@ function EvalParticipantsTab({
       await load();
     } catch (error: any) {
       message.error(error.response?.data?.message || "复制失败");
+    }
+  }
+
+  function primaryDepartmentPath(contact: ContactLite) {
+    const primary = (contact.memberships || []).find(
+      (membership) => membership.isPrimary,
+    );
+    return primary?.departmentPath || contact.department || "未设置主部门";
+  }
+
+  function openParticipantAddition() {
+    setAdditionIds([]);
+    setAdditionPreview(null);
+    setAdditionOpen(true);
+  }
+
+  async function previewParticipantAddition() {
+    if (!additionIds.length) return message.warning("请至少选择一名补充成员");
+    setAdditionPreviewLoading(true);
+    try {
+      const { data } = await http.post(
+        `/admin/eval/cycles/${cycle.id}/participants/additions/preview`,
+        { contactIds: additionIds },
+      );
+      setAdditionPreview(data);
+    } catch (error: any) {
+      const detail = error.response?.data?.message;
+      message.error(
+        Array.isArray(detail) ? detail.join("；") : detail || "补人预览失败",
+      );
+    } finally {
+      setAdditionPreviewLoading(false);
+    }
+  }
+
+  async function confirmParticipantAddition() {
+    if (!additionPreview) return previewParticipantAddition();
+    setAdditionSaving(true);
+    try {
+      const { data } = await http.post(
+        `/admin/eval/cycles/${cycle.id}/participants/additions`,
+        { contactIds: additionIds },
+      );
+      message.success(
+        `已补充 ${data.createdParticipantCount} 名成员，新增 ${data.createdRelationCount} 份评价任务`,
+      );
+      setAdditionOpen(false);
+      setAdditionIds([]);
+      setAdditionPreview(null);
+      await load();
+      onParticipantsAdded?.();
+    } catch (error: any) {
+      const detail = error.response?.data?.message;
+      setAdditionPreview(null);
+      message.error(
+        Array.isArray(detail) ? detail.join("；") : detail || "补充成员失败",
+      );
+    } finally {
+      setAdditionSaving(false);
     }
   }
 
@@ -1593,28 +1694,37 @@ function EvalParticipantsTab({
           message="人员范围或当期小组已变化，需要到“关系复核”重新生成评价关系"
         />
       )}
-      {!readonly && (
+      {(!readonly || canAddPublishedParticipants) && (
         <Card className="eval-toolbar-card">
           <Space wrap>
-            <Select
-              mode="multiple"
-              style={{ minWidth: 360 }}
-              placeholder="按部门/组选择"
-              value={selectedDepartments}
-              options={departments.map((department) => ({
-                label: `${department.path}（${department.count} 人）`,
-                value: department.id,
-              }))}
-              onChange={selectDepartments}
-            />
-            <Button onClick={() => setCopyOpen(true)}>复制上一批次</Button>
-            <Button
-              type="primary"
-              loading={previewLoading}
-              onClick={previewSelection}
-            >
-              确认人员范围（{selectedIds.length} 人）
-            </Button>
+            {!readonly && (
+              <>
+                <Select
+                  mode="multiple"
+                  style={{ minWidth: 360 }}
+                  placeholder="按部门/组选择"
+                  value={selectedDepartments}
+                  options={departments.map((department) => ({
+                    label: `${department.path}（${department.count} 人）`,
+                    value: department.id,
+                  }))}
+                  onChange={selectDepartments}
+                />
+                <Button onClick={() => setCopyOpen(true)}>复制上一批次</Button>
+                <Button
+                  type="primary"
+                  loading={previewLoading}
+                  onClick={previewSelection}
+                >
+                  确认人员范围（{selectedIds.length} 人）
+                </Button>
+              </>
+            )}
+            {canAddPublishedParticipants && (
+              <Button type="primary" onClick={openParticipantAddition}>
+                补充成员
+              </Button>
+            )}
           </Space>
         </Card>
       )}
@@ -1762,6 +1872,122 @@ function EvalParticipantsTab({
                     ))}
                   </div>
                 }
+              />
+            )}
+          </div>
+        )}
+      </Modal>
+      <Modal
+        title="发布后补充成员"
+        open={additionOpen}
+        width={760}
+        okText={
+          additionPreview ? "确认补充并生成任务" : "预览补人影响"
+        }
+        cancelText="取消"
+        confirmLoading={additionPreviewLoading || additionSaving}
+        onCancel={() => {
+          setAdditionOpen(false);
+          setAdditionPreview(null);
+        }}
+        onOk={confirmParticipantAddition}
+      >
+        <Alert
+          type="warning"
+          showIcon
+          message="补人不会改动已有答卷，但同组原成员会收到新的评价任务"
+          style={{ marginBottom: 16 }}
+        />
+        <Typography.Text strong>选择需要补充的成员</Typography.Text>
+        <Select
+          mode="multiple"
+          showSearch
+          optionFilterProp="label"
+          style={{ width: "100%", marginTop: 8 }}
+          placeholder="按姓名、部门或联系人 ID 搜索"
+          value={additionIds}
+          onChange={(values) => {
+            setAdditionIds(values);
+            setAdditionPreview(null);
+          }}
+          options={additionCandidates.map((contact) => ({
+            value: contact.id,
+            label: `${contact.name} · ${primaryDepartmentPath(contact)} · ID ${contact.id}`,
+          }))}
+          notFoundContent="没有可补充的员工"
+        />
+
+        {additionPreview && (
+          <div className="eval-published-addition-preview">
+            <Row gutter={[12, 12]}>
+              <Col xs={12} sm={6}>
+                <Statistic
+                  title="新增成员"
+                  value={additionPreview.newParticipantCount}
+                  suffix="人"
+                />
+              </Col>
+              <Col xs={12} sm={6}>
+                <Statistic
+                  title="新增自评"
+                  value={additionPreview.selfRelationCount}
+                  suffix="份"
+                />
+              </Col>
+              <Col xs={12} sm={6}>
+                <Statistic
+                  title="新增互评"
+                  value={additionPreview.peerRelationCount}
+                  suffix="份"
+                />
+              </Col>
+              <Col xs={12} sm={6}>
+                <Statistic
+                  title="受影响原成员"
+                  value={additionPreview.affectedExistingRaterCount}
+                  suffix="人"
+                />
+              </Col>
+            </Row>
+            <Descriptions
+              size="small"
+              column={1}
+              style={{ marginTop: 18 }}
+              items={[
+                {
+                  key: "tasks",
+                  label: "合计新增任务",
+                  children: `${additionPreview.totalRelationCount} 份`,
+                },
+                {
+                  key: "deadline",
+                  label: "批次截止时间",
+                  children: dayjs(additionPreview.deadlineAt).format(
+                    "YYYY-MM-DD HH:mm",
+                  ),
+                },
+                {
+                  key: "people",
+                  label: "补充成员",
+                  children: (
+                    <Space size={[4, 6]} wrap>
+                      {additionPreview.participants.map((participant) => (
+                        <Tag key={participant.contactId} color="blue">
+                          {participant.name} · {participant.department} · ID {participant.contactId}
+                        </Tag>
+                      ))}
+                    </Space>
+                  ),
+                },
+              ]}
+            />
+            {additionPreview.warnings.length > 0 && (
+              <Alert
+                type="warning"
+                showIcon
+                message="组织归属提示"
+                description={additionPreview.warnings.join("；")}
+                style={{ marginTop: 12 }}
               />
             )}
           </div>

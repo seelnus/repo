@@ -96,6 +96,27 @@ export class EvalController {
     return this.evalService.copyParticipants(id, sourceCycleId, req.admin.sub);
   }
 
+  @Post('cycles/:id/participants/additions/preview')
+  previewPublishedParticipantAddition(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: any,
+  ) {
+    return this.evalService.previewPublishedParticipantAddition(id, body);
+  }
+
+  @Post('cycles/:id/participants/additions')
+  addPublishedParticipants(
+    @Req() req: any,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: any,
+  ) {
+    return this.evalService.addPublishedParticipants(
+      id,
+      body,
+      req.admin.sub,
+    );
+  }
+
   @Put('cycles/:id/participants/:participantId')
   updateParticipant(
     @Req() req: any,

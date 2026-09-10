@@ -73,6 +73,27 @@ type PlannedParticipant = {
   groups: PlannedParticipantGroup[];
 };
 
+type SnapshotPlannerClient = Pick<
+  Prisma.TransactionClient,
+  'contact' | 'orgDepartment'
+>;
+
+type PublishedParticipantAdditionSummary = {
+  cycleId: number;
+  newParticipantCount: number;
+  selfRelationCount: number;
+  peerRelationCount: number;
+  affectedExistingRaterCount: number;
+  totalRelationCount: number;
+  deadlineAt: Date;
+  participants: Array<{
+    contactId: number;
+    name: string;
+    department: string;
+  }>;
+  warnings: string[];
+};
+
 export type DepartmentResultParticipant = {
   contactId: number;
   departmentSnapshot?: string | null;
@@ -540,9 +561,12 @@ export class EvalService {
     };
   }
 
-  private async planParticipantSnapshots(contactIds: number[]) {
+  private async planParticipantSnapshots(
+    contactIds: number[],
+    db: SnapshotPlannerClient = this.prisma,
+  ) {
     const [contacts, departments] = await Promise.all([
-      this.prisma.contact.findMany({
+      db.contact.findMany({
         where: { id: { in: contactIds } },
         include: {
           memberships: {
@@ -551,7 +575,7 @@ export class EvalService {
           },
         },
       }),
-      this.prisma.orgDepartment.findMany(),
+      db.orgDepartment.findMany(),
     ]);
     if (contacts.length !== contactIds.length) {
       throw new BadRequestException('部分联系人不存在，请刷新后重试');
@@ -855,6 +879,276 @@ export class EvalService {
       },
       adminId,
     );
+  }
+
+  private assertPublishedParticipantAdditionCycle(cycle: {
+    version: number;
+    status: string;
+    templateSurveyId: number | null;
+    endAt: Date | null;
+  }) {
+    if (cycle.version < 2)
+      throw new BadRequestException('只有新版 360 环评批次支持发布后补人');
+    if (cycle.status !== 'published')
+      throw new BadRequestException('只有已发布且未截止的批次允许补充成员');
+    if (!cycle.templateSurveyId)
+      throw new BadRequestException('当前批次未绑定统一环评模板');
+    if (!cycle.endAt || new Date() > cycle.endAt)
+      throw new BadRequestException('当前批次已截止，不能补充成员');
+    return cycle.endAt;
+  }
+
+  private buildPublishedParticipantAddition(
+    cycleId: number,
+    deadlineAt: Date,
+    existingParticipants: Array<{
+      id: number;
+      contactId: number;
+      mode: string;
+      groupKey: string;
+      groupName: string;
+      groupSnapshots: ParticipantGroupSnapshotInput[];
+    }>,
+    additions: PlannedParticipant[],
+    existingRelations: Array<{
+      raterContactId: number;
+      rateeContactId: number;
+    }>,
+    warnings: string[],
+  ) {
+    const legacyGroupIds = new Map<string, number>();
+    const existingInput: MultiGroupParticipant[] = existingParticipants.map(
+      (participant) => {
+        let groups = participant.groupSnapshots;
+        if (!groups.length) {
+          if (!legacyGroupIds.has(participant.groupKey)) {
+            legacyGroupIds.set(
+              participant.groupKey,
+              -(legacyGroupIds.size + 1),
+            );
+          }
+          groups = [
+            {
+              departmentId: legacyGroupIds.get(participant.groupKey)!,
+              departmentNameSnapshot: participant.groupName,
+              departmentPathSnapshot: participant.groupName,
+              isPrimarySnapshot: true,
+              evalEnabled: true,
+            },
+          ];
+        }
+        return {
+          participantId: participant.id,
+          contactId: participant.contactId,
+          mode: participant.mode,
+          groups,
+        };
+      },
+    );
+    const additionInput: MultiGroupParticipant[] = additions.map(
+      (participant) => ({
+        participantId: -participant.contactId,
+        contactId: participant.contactId,
+        mode: 'normal',
+        groups: participant.groups,
+      }),
+    );
+    const newContactIds = new Set(
+      additions.map((participant) => participant.contactId),
+    );
+    const existingKeys = new Set(
+      existingRelations.map(
+        (relation) =>
+          `${relation.raterContactId}:${relation.rateeContactId}`,
+      ),
+    );
+    const generated = buildMultiGroupAutoRelations([
+      ...existingInput,
+      ...additionInput,
+    ]);
+    const relations = generated.relations.filter((relation) => {
+      const involvesAddition =
+        newContactIds.has(relation.raterContactId) ||
+        newContactIds.has(relation.rateeContactId);
+      const key = `${relation.raterContactId}:${relation.rateeContactId}`;
+      return involvesAddition && !existingKeys.has(key);
+    });
+    const selfRelationCount = relations.filter(
+      (relation) => relation.relationType === 'self',
+    ).length;
+    const peerRelationCount = relations.length - selfRelationCount;
+    const affectedExistingRaterCount = new Set(
+      relations
+        .filter((relation) => !newContactIds.has(relation.raterContactId))
+        .map((relation) => relation.raterContactId),
+    ).size;
+    const summary: PublishedParticipantAdditionSummary = {
+      cycleId,
+      newParticipantCount: additions.length,
+      selfRelationCount,
+      peerRelationCount,
+      affectedExistingRaterCount,
+      totalRelationCount: relations.length,
+      deadlineAt,
+      participants: additions.map((participant) => ({
+        contactId: participant.contactId,
+        name: participant.nameSnapshot,
+        department: participant.departmentSnapshot,
+      })),
+      warnings,
+    };
+    return { summary, relations };
+  }
+
+  private additionContactIds(data: any) {
+    const contactIds = uniquePositiveIds(data?.contactIds || []);
+    if (!contactIds.length)
+      throw new BadRequestException('请至少选择一名需要补充的成员');
+    return contactIds;
+  }
+
+  private async assertContactsNotParticipants(
+    cycleId: number,
+    contactIds: number[],
+    db: Pick<Prisma.TransactionClient, 'evalCycleParticipant'> = this.prisma,
+  ) {
+    const existing = await db.evalCycleParticipant.findMany({
+      where: { cycleId, contactId: { in: contactIds } },
+      select: { contactId: true, nameSnapshot: true },
+    });
+    if (existing.length) {
+      throw new ConflictException(
+        `${existing.map((participant) => participant.nameSnapshot).join('、')}已在当前批次中，请刷新后重试`,
+      );
+    }
+  }
+
+  async previewPublishedParticipantAddition(cycleId: number, data: any) {
+    const contactIds = this.additionContactIds(data);
+    const cycle = await this.getCycle(cycleId);
+    const deadlineAt = this.assertPublishedParticipantAdditionCycle(cycle);
+    await this.assertContactsNotParticipants(cycleId, contactIds);
+    const planned = await this.planParticipantSnapshots(contactIds);
+    const [existingParticipants, existingRelations] = await Promise.all([
+      this.prisma.evalCycleParticipant.findMany({
+        where: { cycleId },
+        include: { groupSnapshots: true },
+      }),
+      this.prisma.evalRelation.findMany({
+        where: { cycleId },
+        select: { raterContactId: true, rateeContactId: true },
+      }),
+    ]);
+    return this.buildPublishedParticipantAddition(
+      cycleId,
+      deadlineAt,
+      existingParticipants,
+      planned.participants,
+      existingRelations,
+      planned.summary.warnings,
+    ).summary;
+  }
+
+  async addPublishedParticipants(
+    cycleId: number,
+    data: any,
+    adminId: number,
+  ) {
+    const contactIds = this.additionContactIds(data);
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const lockedCycles = await tx.$queryRaw<Array<{ id: number }>>(
+          Prisma.sql`SELECT id FROM eval_cycles WHERE id = ${cycleId} FOR UPDATE`,
+        );
+        if (!lockedCycles.length)
+          throw new NotFoundException('环评批次不存在');
+        const cycle = await tx.evalCycle.findUnique({ where: { id: cycleId } });
+        if (!cycle) throw new NotFoundException('环评批次不存在');
+        const deadlineAt = this.assertPublishedParticipantAdditionCycle(cycle);
+        await this.assertContactsNotParticipants(cycleId, contactIds, tx);
+        const planned = await this.planParticipantSnapshots(contactIds, tx);
+        const [existingParticipants, existingRelations] = await Promise.all([
+          tx.evalCycleParticipant.findMany({
+            where: { cycleId },
+            include: { groupSnapshots: true },
+          }),
+          tx.evalRelation.findMany({
+            where: { cycleId },
+            select: { raterContactId: true, rateeContactId: true },
+          }),
+        ]);
+        const addition = this.buildPublishedParticipantAddition(
+          cycleId,
+          deadlineAt,
+          existingParticipants,
+          planned.participants,
+          existingRelations,
+          planned.summary.warnings,
+        );
+
+        for (const participant of planned.participants) {
+          await tx.evalCycleParticipant.create({
+            data: {
+              cycleId,
+              contactId: participant.contactId,
+              nameSnapshot: participant.nameSnapshot,
+              jobNoSnapshot: participant.jobNoSnapshot,
+              departmentSnapshot: participant.departmentSnapshot,
+              positionSnapshot: participant.positionSnapshot,
+              groupKey: participant.groupKey,
+              groupName: participant.groupName,
+              mode: 'normal',
+              peerExempt: false,
+              exceptionReason: null,
+              groupSnapshots: { create: participant.groups },
+            },
+          });
+        }
+        const createdRelations = addition.relations.length
+          ? await tx.evalRelation.createMany({
+              data: addition.relations.map((relation) => ({
+                cycleId,
+                raterContactId: relation.raterContactId,
+                rateeContactId: relation.rateeContactId,
+                relationType: relation.relationType,
+                surveyId: cycle.templateSurveyId!,
+                source: 'auto',
+                status: 'pending',
+              })),
+              skipDuplicates: true,
+            })
+          : { count: 0 };
+        await tx.evalAuditLog.create({
+          data: {
+            cycleId,
+            adminId,
+            action: 'add_published_participants',
+            targetType: 'cycle_participants',
+            afterJson: toJsonInput({
+              contactIds,
+              previousParticipantCount: existingParticipants.length,
+              previousRelationCount: existingRelations.length,
+              ...addition.summary,
+              createdParticipantCount: planned.participants.length,
+              createdRelationCount: createdRelations.count,
+            }),
+          },
+        });
+        return {
+          ...addition.summary,
+          createdParticipantCount: planned.participants.length,
+          createdRelationCount: createdRelations.count,
+        };
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new ConflictException('成员已被加入当前批次，请刷新后重试');
+      }
+      throw error;
+    }
   }
 
   async updateParticipantGroups(

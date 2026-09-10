@@ -3214,6 +3214,22 @@ textarea.auto-resize:focus {
   color: #805300;
 }
 
+.eval-published-addition-preview {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid #d6e4ff;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #f7fbff, #f0f5ff);
+}
+
+.eval-published-addition-preview .ant-statistic-title {
+  min-height: 42px;
+}
+
+.eval-published-addition-preview .ant-statistic-content {
+  color: #1677ff;
+}
+
 @media (max-width: 720px) {
   .eval-membership-rail-item {
     grid-template-columns: 1fr;
